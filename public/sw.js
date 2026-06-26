@@ -21,9 +21,8 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  // Skip API requests — pass through to network
-  if (e.request.url.includes("/api/")) {
-    e.respondWith(fetch(e.request));
+  // Skip non-GET requests and API calls — let browser handle them natively
+  if (e.request.method !== "GET" || e.request.url.includes("/api/")) {
     return;
   }
 
@@ -32,11 +31,13 @@ self.addEventListener("fetch", (e) => {
       const fetched = fetch(e.request).then((resp) => {
         if (resp.ok) {
           const clone = resp.clone();
-          caches.open(CACHE).then((cache) => {
-            cache.put(e.request, clone);
-          });
+          caches.open(CACHE).then((cache) => cache.put(e.request, clone));
         }
         return resp;
+      }).catch(() => {
+        // Network failed — return cached copy if available
+        if (cached) return cached;
+        return new Response("Offline", { status: 503 });
       });
 
       return cached || fetched;
