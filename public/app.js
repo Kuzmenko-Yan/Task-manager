@@ -1,36 +1,113 @@
 // ===== Auth =====
 const API = "/api";
-let token = localStorage.getItem("kanban_token");
+let accessToken = localStorage.getItem("kanban_access_token");
+let refreshToken = localStorage.getItem("kanban_refresh_token");
 let userEmail = localStorage.getItem("kanban_email");
+let isRefreshing = false;
+let refreshSubscribers = [];
 
-function api(path, options = {}) {
-  const headers = { "Content-Type": "application/json", ...options.headers };
-  if (token) headers["Authorization"] = "Bearer " + token;
-  return fetch(API + path, { ...options, headers }).then((r) => {
-    if (r.status === 401) {
-      logout();
-      throw new Error("Unauthorized");
-    }
-    const ct = r.headers.get("content-type") || "";
-    if (!ct.includes("application/json")) {
-      // Not JSON — read as text and throw
-      return r.text().then((text) => {
-        throw new Error(text.slice(0, 200) || "Unexpected response");
-      });
-    }
-    return r.json().then((data) => {
-      if (!r.ok) throw new Error(data.error || "Request failed");
-      return data;
+function subscribeTokenRefresh(cb) {
+  refreshSubscribers.push(cb);
+}
+
+function onRefreshed(newAccessToken) {
+  refreshSubscribers.forEach((cb) => cb(newAccessToken));
+  refreshSubscribers = [];
+}
+
+function handleResponse(r) {
+  if (r.status === 401) {
+    logout();
+    throw new Error("Unauthorized");
+  }
+  const ct = r.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    return r.text().then((text) => {
+      throw new Error(text.slice(0, 200) || "Unexpected response");
     });
+  }
+  return r.json().then((data) => {
+    if (!r.ok) throw new Error(data.error || "Request failed");
+    return data;
   });
 }
 
-function logout() {
-  token = null;
+function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...options.headers };
+  if (accessToken) headers["Authorization"] = "Bearer " + accessToken;
+
+  return fetch(API + path, { ...options, headers }).then(async (r) => {
+    if (r.status === 401 && !path.startsWith("/auth/")) {
+      if (!refreshToken) {
+        logout();
+        throw new Error("Unauthorized");
+      }
+
+      if (isRefreshing) {
+        return new Promise((resolve) => {
+          subscribeTokenRefresh((newToken) => {
+            const newHeaders = { "Content-Type": "application/json", ...options.headers };
+            newHeaders["Authorization"] = "Bearer " + newToken;
+            resolve(fetch(API + path, { ...options, headers: newHeaders }).then(handleResponse));
+          });
+        });
+      }
+
+      isRefreshing = true;
+      try {
+        const refreshRes = await fetch(API + "/auth/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken }),
+        });
+        const refreshData = await refreshRes.json();
+        if (!refreshRes.ok) throw new Error(refreshData.error || "Refresh failed");
+
+        accessToken = refreshData.accessToken;
+        refreshToken = refreshData.refreshToken;
+        localStorage.setItem("kanban_access_token", accessToken);
+        localStorage.setItem("kanban_refresh_token", refreshToken);
+        onRefreshed(accessToken);
+
+        const newHeaders = { "Content-Type": "application/json", ...options.headers };
+        newHeaders["Authorization"] = "Bearer " + accessToken;
+        return fetch(API + path, { ...options, headers: newHeaders }).then(handleResponse);
+      } catch {
+        logout();
+        throw new Error("Session expired. Please log in again.");
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    return handleResponse(r);
+  });
+}
+
+async function logout() {
+  const currentRefresh = refreshToken;
+  accessToken = null;
+  refreshToken = null;
   userEmail = null;
-  localStorage.removeItem("kanban_token");
+  localStorage.removeItem("kanban_access_token");
+  localStorage.removeItem("kanban_refresh_token");
   localStorage.removeItem("kanban_email");
   showScreen("auth");
+
+  if (currentRefresh) {
+    try {
+      await fetch(API + "/auth/logout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + currentRefresh,
+        },
+        body: JSON.stringify({ refreshToken: currentRefresh }),
+      });
+    } catch {
+      // ignore network errors on logout
+    }
+  }
 }
 
 function login(email, pwd) {
@@ -77,9 +154,11 @@ loginForm.addEventListener("submit", async (e) => {
 
   try {
     const data = await login(email, pwd);
-    token = data.token;
+    accessToken = data.accessToken;
+    refreshToken = data.refreshToken;
     userEmail = data.user.email;
-    localStorage.setItem("kanban_token", token);
+    localStorage.setItem("kanban_access_token", accessToken);
+    localStorage.setItem("kanban_refresh_token", refreshToken);
     localStorage.setItem("kanban_email", userEmail);
     document.getElementById("user-email-display").textContent = userEmail;
     showScreen("board");
@@ -105,9 +184,11 @@ registerForm.addEventListener("submit", async (e) => {
 
   try {
     const data = await register(email, pwd);
-    token = data.token;
+    accessToken = data.accessToken;
+    refreshToken = data.refreshToken;
     userEmail = data.user.email;
-    localStorage.setItem("kanban_token", token);
+    localStorage.setItem("kanban_access_token", accessToken);
+    localStorage.setItem("kanban_refresh_token", refreshToken);
     localStorage.setItem("kanban_email", userEmail);
     document.getElementById("user-email-display").textContent = userEmail;
     showScreen("board");
@@ -480,7 +561,7 @@ document.getElementById("delete-task-btn").addEventListener("click", async () =>
 });
 
 // ===== Init =====
-if (token && userEmail) {
+if (accessToken && userEmail) {
   // Verify token is still valid before showing board
   api("/me")
     .then(() => {

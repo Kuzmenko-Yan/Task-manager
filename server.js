@@ -7,7 +7,13 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || "kanban-secret-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error("FATAL: JWT_SECRET environment variable is not set");
+  process.exit(1);
+}
+const ACCESS_EXPIRES_IN = process.env.ACCESS_EXPIRES_IN || "15m";
+const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN || "30d";
 const DB_PATH = path.join(__dirname, "data", "kanban.db");
 
 // Ensure data dir
@@ -15,6 +21,10 @@ const dataDir = path.join(__dirname, "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 let db;
+
+// In-memory store for refresh tokens (userId -> Set(token))
+// For production with multiple instances, use Redis or DB table
+const refreshTokens = new Map();
 
 function saveDb() {
   const buf = db.export();
@@ -57,6 +67,39 @@ function dbExec(sql) {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+function generateAccessToken(user) {
+  return jwt.sign({ id: user.id, email: user.email, type: "access" }, JWT_SECRET, {
+    expiresIn: ACCESS_EXPIRES_IN,
+  });
+}
+
+function generateRefreshToken(user) {
+  return jwt.sign({ id: user.id, type: "refresh" }, JWT_SECRET, {
+    expiresIn: REFRESH_EXPIRES_IN,
+  });
+}
+
+function storeRefreshToken(userId, token) {
+  if (!refreshTokens.has(userId)) {
+    refreshTokens.set(userId, new Set());
+  }
+  refreshTokens.get(userId).add(token);
+}
+
+function removeRefreshToken(userId, token) {
+  const userTokens = refreshTokens.get(userId);
+  if (userTokens) {
+    userTokens.delete(token);
+    if (userTokens.size === 0) {
+      refreshTokens.delete(userId);
+    }
+  }
+}
+
+function clearUserRefreshTokens(userId) {
+  refreshTokens.delete(userId);
+}
+
 // Auth middleware
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -65,7 +108,11 @@ function auth(req, res, next) {
   }
   try {
     const token = header.slice(7);
-    req.user = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (payload.type !== "access") {
+      return res.status(401).json({ error: "Invalid token type" });
+    }
+    req.user = payload;
     next();
   } catch {
     return res.status(401).json({ error: "Invalid token" });
@@ -93,8 +140,15 @@ app.post("/api/auth/register", (req, res) => {
 
   const user = dbGet("SELECT id, email FROM users WHERE email = ?", [email]);
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET);
-  res.json({ token, user: { id: user.id, email: user.email } });
+  const accessToken = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user);
+  storeRefreshToken(user.id, refreshToken);
+
+  res.json({
+    accessToken,
+    refreshToken,
+    user: { id: user.id, email: user.email },
+  });
 });
 
 app.post("/api/auth/login", (req, res) => {
@@ -108,8 +162,66 @@ app.post("/api/auth/login", (req, res) => {
     return res.status(401).json({ error: "Invalid email or password" });
   }
 
-  const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET);
-  res.json({ token, user: { id: user.id, email: user.email } });
+  const accessToken = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user);
+  storeRefreshToken(user.id, refreshToken);
+
+  res.json({
+    accessToken,
+    refreshToken,
+    user: { id: user.id, email: user.email },
+  });
+});
+
+app.post("/api/auth/refresh", (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    return res.status(401).json({ error: "No refresh token" });
+  }
+
+  try {
+    const payload = jwt.verify(refreshToken, JWT_SECRET);
+    if (payload.type !== "refresh") {
+      return res.status(401).json({ error: "Invalid token type" });
+    }
+
+    const userTokens = refreshTokens.get(payload.id);
+    if (!userTokens || !userTokens.has(refreshToken)) {
+      return res.status(401).json({ error: "Refresh token revoked" });
+    }
+
+    const user = dbGet("SELECT id, email FROM users WHERE id = ?", [payload.id]);
+    if (!user) {
+      return res.status(401).json({ error: "User not found" });
+    }
+
+    // Rotate refresh token: issue new pair and invalidate old one
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+    removeRefreshToken(user.id, refreshToken);
+    storeRefreshToken(user.id, newRefreshToken);
+
+    res.json({ accessToken: newAccessToken, refreshToken: newRefreshToken });
+  } catch {
+    return res.status(401).json({ error: "Invalid refresh token" });
+  }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (refreshToken) {
+    try {
+      const payload = jwt.verify(refreshToken, JWT_SECRET);
+      if (payload.type === "refresh") {
+        clearUserRefreshTokens(payload.id);
+      }
+    } catch {
+      // ignore invalid/expired refresh token on logout
+    }
+  }
+
+  res.json({ ok: true });
 });
 
 app.get("/api/me", auth, (req, res) => {
