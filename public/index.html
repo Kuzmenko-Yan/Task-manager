@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Таск-менеджер канбан с голосовым вводом">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <title>Канбан</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+</head>
+<body>
+  <!-- Auth screen -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-container">
+      <h1>📋 Канбан</h1>
+      <p class="auth-subtitle">Таск-менеджер с голосовым вводом</p>
+
+      <!-- Login form -->
+      <form id="login-form" class="auth-form">
+        <h2>Вход</h2>
+        <input type="email" id="login-email" placeholder="Email" required autocomplete="email">
+        <input type="password" id="login-password" placeholder="Пароль" required autocomplete="current-password" minlength="4">
+        <button type="submit" class="btn btn-primary">Войти</button>
+        <p class="auth-switch">Нет аккаунта? <a href="#" id="show-register">Регистрация</a></p>
+        <p class="auth-error" id="login-error"></p>
+      </form>
+
+      <!-- Register form -->
+      <form id="register-form" class="auth-form hidden">
+        <h2>Регистрация</h2>
+        <input type="email" id="register-email" placeholder="Email" required autocomplete="email">
+        <input type="password" id="register-password" placeholder="Пароль (мин. 4 символа)" required autocomplete="new-password" minlength="4">
+        <button type="submit" class="btn btn-primary">Создать аккаунт</button>
+        <p class="auth-switch">Уже есть аккаунт? <a href="#" id="show-login">Войти</a></p>
+        <p class="auth-error" id="register-error"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- Kanban board screen -->
+  <div id="board-screen" class="screen hidden">
+    <header class="board-header">
+      <h1>📋 Канбан</h1>
+      <div class="header-right">
+        <span class="user-email" id="user-email-display"></span>
+        <button id="logout-btn" class="btn btn-outline">Выйти</button>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <form id="add-task-form" class="add-task-form">
+        <input type="text" id="new-task-title" placeholder="Новая задача..." required>
+        <select id="new-task-column">
+          <option value="backlog">Бэклог</option>
+          <option value="todo">To Do</option>
+          <option value="in_progress">В процессе</option>
+          <option value="done">Готово</option>
+        </select>
+        <input type="date" id="new-task-due" title="Дата выполнения">
+        <button type="submit" class="btn btn-primary">Добавить</button>
+      </form>
+    </div>
+
+    <div class="board" id="kanban-board">
+      <div class="column" data-column="backlog">
+        <div class="column-header">📥 <span class="col-title" contenteditable="true" data-col="backlog">Бэклог</span> <span class="column-count" id="count-backlog">0</span></div>
+        <div class="column-body" id="col-backlog"></div>
+      </div>
+      <div class="column" data-column="todo">
+        <div class="column-header">📝 <span class="col-title" contenteditable="true" data-col="todo">To Do</span> <span class="column-count" id="count-todo">0</span></div>
+        <div class="column-body" id="col-todo"></div>
+      </div>
+      <div class="column" data-column="in_progress">
+        <div class="column-header">⚙️ <span class="col-title" contenteditable="true" data-col="in_progress">В процессе</span> <span class="column-count" id="count-in_progress">0</span></div>
+        <div class="column-body" id="col-in_progress"></div>
+      </div>
+      <div class="column" data-column="done">
+        <div class="column-header">✅ <span class="col-title" contenteditable="true" data-col="done">Готово</span> <span class="column-count" id="count-done">0</span></div>
+        <div class="column-body" id="col-done"></div>
+      </div>
+    </div>
+
+    <!-- Task edit modal -->
+    <div id="task-modal" class="modal hidden">
+      <div class="modal-content">
+        <span class="modal-close" id="modal-close">&times;</span>
+        <h3>Редактировать задачу</h3>
+        <form id="edit-task-form">
+          <input type="hidden" id="edit-task-id">
+          <label>Заголовок</label>
+          <input type="text" id="edit-task-title" required>
+          <label>Описание (пункты)</label>
+          <div id="edit-task-items">
+            <input type="text" class="task-item-input" placeholder="Пункт 1">
+            <input type="text" class="task-item-input" placeholder="Пункт 2">
+            <input type="text" class="task-item-input" placeholder="Пункт 3">
+            <input type="text" class="task-item-input" placeholder="Пункт 4">
+            <input type="text" class="task-item-input" placeholder="Пункт 5">
+          </div>
+          <label>Колонка</label>
+          <select id="edit-task-column">
+            <option value="backlog">Бэклог</option>
+            <option value="todo">To Do</option>
+            <option value="in_progress">В процессе</option>
+            <option value="done">Готово</option>
+          </select>
+          <label>Дата выполнения</label>
+          <input type="date" id="edit-task-due">
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button type="button" class="btn btn-danger" id="delete-task-btn">Удалить</button>
+            <button type="button" class="btn btn-outline" id="modal-cancel">Отмена</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

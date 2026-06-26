@@ -1,0 +1,49 @@
+# 📋 Канбан — таск-менеджер с голосовым вводом
+
+PWA-приложение для управления задачами в стиле Kanban. Работает как нативное на macOS и iOS.
+
+## Возможности
+
+- 🗂️ Канбан-доска: Бэклог → To Do → В процессе → Готово
+- 🎯 Drag & Drop — перетаскивание задач между колонками
+- 👥 Многопользовательский режим — у каждого своя доска
+- 🔑 Простая регистрация — email + пароль
+- 📱 PWA — установка на домашний экран iOS/macOS
+- 🎤 Голосовой ввод (Web Speech API — Этап 2)
+
+## Быстрый старт
+
+```bash
+npm install
+npm start
+```
+
+Открыть: `http://localhost:3000`
+
+## API
+
+| Метод | Путь | Описание |
+|--------|------|----------|
+| POST | `/api/auth/register` | Регистрация `{email, password}` |
+| POST | `/api/auth/login` | Вход `{email, password}` |
+| GET | `/api/me` | Информация о пользователе |
+| GET | `/api/tasks` | Список задач (JWT) |
+| POST | `/api/tasks` | Создать задачу |
+| PUT | `/api/tasks/:id` | Обновить задачу |
+| DELETE | `/api/tasks/:id` | Удалить задачу |
+| POST | `/api/tasks/reorder` | Перемещение задач (drag & drop) |
+
+## Стек
+
+- **Бэкенд:** Node.js + Express + sql.js
+- **Фронтенд:** HTML/CSS + Vanilla JS + SortableJS
+- **PWA:** Service Worker + Web App Manifest
+- **Авторизация:** JWT + bcryptjs
+
+## Этап 2 (будет позже)
+
+Голосовой ввод через Web Speech API — диктуешь задачу, она появляется на доске.
+
+## Лицензия
+
+MIT

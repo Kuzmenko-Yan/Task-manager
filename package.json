@@ -1,0 +1,17 @@
+{
+  "name": "kanban",
+  "version": "1.0.0",
+  "description": "Kanban task manager PWA with voice input",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "sql.js": "^1.13.0"
+  },
+  "license": "MIT"
+}
