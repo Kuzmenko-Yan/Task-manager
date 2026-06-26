@@ -1,52 +1,75 @@
+// ============================================================
+//  Kanban Server — Express + SQLite (sql.js) + JWT-аутентификация
+// ============================================================
+
 const express = require("express");
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
-const initSqlJs = require("sql.js");
+const jwt = require("jsonwebtoken");   // access + refresh токены
+const bcrypt = require("bcryptjs");    // хеширование паролей
+const initSqlJs = require("sql.js");   // SQLite, скомпилирован в WebAssembly (не требует установки)
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
+
+// ---- Конфигурация из переменных окружения ----
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
+// Если секрет не задан — сервер не запустится (защита от случайного деплоя без секрета)
 if (!JWT_SECRET) {
   console.error("FATAL: JWT_SECRET environment variable is not set");
   process.exit(1);
 }
-const ACCESS_EXPIRES_IN = process.env.ACCESS_EXPIRES_IN || "15m";
-const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN || "30d";
+const ACCESS_EXPIRES_IN = process.env.ACCESS_EXPIRES_IN || "15m";    // access-токен: 15 минут
+const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN || "30d";  // refresh-токен: 30 дней
 const DB_PATH = path.join(__dirname, "data", "kanban.db");
 
-// Ensure data dir
+// Создаём папку data/, если её нет
 const dataDir = path.join(__dirname, "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// Глобальное подключение к БД (открывается при старте сервера)
 let db;
 
-// In-memory store for refresh tokens (userId -> Set(token))
-// For production with multiple instances, use Redis or DB table
+// ============================================================
+//  Хранилище refresh-токенов (в памяти)
+//  Структура: Map<userId, Set<refreshToken>>
+//  В продакшене с несколькими инстансами нужно заменить на Redis
+//  или отдельную таблицу в БД.
+// ============================================================
 const refreshTokens = new Map();
 
+// ============================================================
+//  Вспомогательные функции для работы с БД
+//  sql.js не имеет асинхронного API — всё синхронно.
+//  После каждого изменения вызываем saveDb() —
+//  экспортируем БД в бинарный буфер и пишем на диск.
+// ============================================================
+
+// Сохранить БД на диск
 function saveDb() {
   const buf = db.export();
   fs.writeFileSync(DB_PATH, Buffer.from(buf));
 }
 
+// Выполнить INSERT/UPDATE/DELETE и сразу сохранить
 function dbRun(sql, params = []) {
   db.run(sql, params);
   saveDb();
 }
 
+// Получить одну строку (SELECT ... LIMIT 1) или null
 function dbGet(sql, params = []) {
   const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
+  if (params.length) stmt.bind(params); // подставляем ?-параметры
   let result = null;
   if (stmt.step()) {
     result = stmt.getAsObject();
   }
-  stmt.free();
+  stmt.free(); // обязательно освобождаем prepared statement
   return result;
 }
 
+// Получить все строки запроса
 function dbAll(sql, params = []) {
   const stmt = db.prepare(sql);
   if (params.length) stmt.bind(params);
@@ -58,27 +81,46 @@ function dbAll(sql, params = []) {
   return results;
 }
 
+// Выполнить SQL без параметров (CREATE TABLE, ALTER TABLE, PRAGMA и т.д.)
 function dbExec(sql) {
   db.exec(sql);
   saveDb();
 }
 
-// Middleware
+// ============================================================
+//  Middleware
+// ============================================================
+
+// Парсинг JSON-тела запросов
 app.use(express.json());
+// Раздача статических файлов из public/ (index.html, app.js, style.css и др.)
 app.use(express.static(path.join(__dirname, "public")));
 
+// ============================================================
+//  Работа с JWT-токенами
+// ============================================================
+
+/**
+ * Создать access-токен (короткоживущий, 15 минут).
+ * payload.type = "access" — чтобы отличать от refresh-токена.
+ */
 function generateAccessToken(user) {
   return jwt.sign({ id: user.id, email: user.email, type: "access" }, JWT_SECRET, {
     expiresIn: ACCESS_EXPIRES_IN,
   });
 }
 
+/**
+ * Создать refresh-токен (долгоживущий, 30 дней).
+ * payload.type = "refresh" — не может использоваться для доступа к API.
+ */
 function generateRefreshToken(user) {
   return jwt.sign({ id: user.id, type: "refresh" }, JWT_SECRET, {
     expiresIn: REFRESH_EXPIRES_IN,
   });
 }
 
+// Сохранить refresh-токен в памяти (привязываем к userId)
 function storeRefreshToken(userId, token) {
   if (!refreshTokens.has(userId)) {
     refreshTokens.set(userId, new Set());
@@ -86,41 +128,53 @@ function storeRefreshToken(userId, token) {
   refreshTokens.get(userId).add(token);
 }
 
+// Удалить один конкретный refresh-токен (при ротации)
 function removeRefreshToken(userId, token) {
   const userTokens = refreshTokens.get(userId);
   if (userTokens) {
     userTokens.delete(token);
     if (userTokens.size === 0) {
+      // Нет токенов — удаляем запись о пользователе
       refreshTokens.delete(userId);
     }
   }
 }
 
+// Удалить ВСЕ refresh-токены пользователя (при logout или force-logout)
 function clearUserRefreshTokens(userId) {
   refreshTokens.delete(userId);
 }
 
-// Auth middleware
+// ============================================================
+//  Middleware аутентификации
+//  Проверяет заголовок Authorization: Bearer <accessToken>
+//  При невалидном токене возвращает 401.
+// ============================================================
 function auth(req, res, next) {
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) {
     return res.status(401).json({ error: "No token" });
   }
   try {
-    const token = header.slice(7);
+    const token = header.slice(7); // убираем "Bearer "
     const payload = jwt.verify(token, JWT_SECRET);
+    // Проверяем, что это access-токен (refresh-токеном нельзя достучаться до API)
     if (payload.type !== "access") {
       return res.status(401).json({ error: "Invalid token type" });
     }
-    req.user = payload;
+    req.user = payload; // кладём { id, email } в req.user
     next();
   } catch {
+    // Токен просрочен или подпись не совпадает
     return res.status(401).json({ error: "Invalid token" });
   }
 }
 
-// ---- Auth Routes ----
+// ============================================================
+//  Маршруты авторизации
+// ============================================================
 
+// ---- Регистрация ----
 app.post("/api/auth/register", (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -130,20 +184,25 @@ app.post("/api/auth/register", (req, res) => {
     return res.status(400).json({ error: "Password must be at least 4 characters" });
   }
 
+  // Проверяем, не занят ли email
   const existing = dbGet("SELECT id FROM users WHERE email = ?", [email]);
   if (existing) {
     return res.status(409).json({ error: "Email already registered" });
   }
 
+  // Хешируем пароль (bcrypt, 10 раундов соли)
   const hash = bcrypt.hashSync(password, 10);
   dbRun("INSERT INTO users (email, password_hash) VALUES (?, ?)", [email, hash]);
 
+  // Получаем созданного пользователя
   const user = dbGet("SELECT id, email FROM users WHERE email = ?", [email]);
 
+  // Создаём пару токенов
   const accessToken = generateAccessToken(user);
   const refreshToken = generateRefreshToken(user);
   storeRefreshToken(user.id, refreshToken);
 
+  // Отдаём клиенту токены + инфу о пользователе
   res.json({
     accessToken,
     refreshToken,
@@ -151,6 +210,7 @@ app.post("/api/auth/register", (req, res) => {
   });
 });
 
+// ---- Вход (логин) ----
 app.post("/api/auth/login", (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -158,6 +218,7 @@ app.post("/api/auth/login", (req, res) => {
   }
 
   const user = dbGet("SELECT * FROM users WHERE email = ?", [email]);
+  // Сравниваем пароль с хешем
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: "Invalid email or password" });
   }
@@ -173,6 +234,9 @@ app.post("/api/auth/login", (req, res) => {
   });
 });
 
+// ---- Обновление токенов (refresh) ----
+// Клиент присылает refresh-токен, получает новую пару.
+// Старый refresh-токен при этом отзывается (ротация).
 app.post("/api/auth/refresh", (req, res) => {
   const { refreshToken } = req.body;
   if (!refreshToken) {
@@ -185,17 +249,19 @@ app.post("/api/auth/refresh", (req, res) => {
       return res.status(401).json({ error: "Invalid token type" });
     }
 
+    // Проверяем, что токен есть в хранилище (не отозван)
     const userTokens = refreshTokens.get(payload.id);
     if (!userTokens || !userTokens.has(refreshToken)) {
       return res.status(401).json({ error: "Refresh token revoked" });
     }
 
+    // Проверяем, что пользователь всё ещё существует в БД
     const user = dbGet("SELECT id, email FROM users WHERE id = ?", [payload.id]);
     if (!user) {
       return res.status(401).json({ error: "User not found" });
     }
 
-    // Rotate refresh token: issue new pair and invalidate old one
+    // Ротация: удаляем старый refresh-токен, создаём новый
     const newAccessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user);
     removeRefreshToken(user.id, refreshToken);
@@ -207,6 +273,10 @@ app.post("/api/auth/refresh", (req, res) => {
   }
 });
 
+// ---- Выход (logout) ----
+// Отзывает все refresh-токены пользователя.
+// Middleware auth НЕ используется — клиент может разлогиниться
+// даже с просроченным access-токеном.
 app.post("/api/auth/logout", (req, res) => {
   const { refreshToken } = req.body;
 
@@ -214,25 +284,39 @@ app.post("/api/auth/logout", (req, res) => {
     try {
       const payload = jwt.verify(refreshToken, JWT_SECRET);
       if (payload.type === "refresh") {
+        // Удаляем ВСЕ refresh-токены пользователя
+        // (выход на всех устройствах)
         clearUserRefreshTokens(payload.id);
       }
     } catch {
-      // ignore invalid/expired refresh token on logout
+      // Если refresh-токен уже просрочен или невалиден —
+      // это не ошибка, просто игнорируем
     }
   }
 
   res.json({ ok: true });
 });
 
+// ---- Текущий пользователь (проверка токена) ----
+// Используется фронтендом при загрузке страницы:
+// если токен валиден — показываем доску, иначе — форму логина.
 app.get("/api/me", auth, (req, res) => {
   res.json({ user: { id: req.user.id, email: req.user.email } });
 });
 
-// ---- Task Routes ----
+// ============================================================
+//  Маршруты для работы с задачами
+//  Все требуют аутентификации (middleware auth).
+// ============================================================
 
+// ---- Получить все задачи текущего пользователя ----
+// Сортируем по position (порядок в колонке).
 app.get("/api/tasks", auth, (req, res) => {
-  const tasks = dbAll("SELECT * FROM tasks WHERE user_id = ? ORDER BY position ASC", [req.user.id]);
-  // sql.js returns lowercase column names from getAsObject()
+  const tasks = dbAll(
+    "SELECT * FROM tasks WHERE user_id = ? ORDER BY position ASC",
+    [req.user.id]
+  );
+  // sql.js возвращает имена колонок в нижнем регистре — нормализуем
   const normalized = tasks.map((t) => ({
     id: t.id,
     user_id: t.user_id,
@@ -246,6 +330,7 @@ app.get("/api/tasks", auth, (req, res) => {
   res.json({ tasks: normalized });
 });
 
+// ---- Создать новую задачу ----
 app.post("/api/tasks", auth, (req, res) => {
   const { title, description, column_name, due_date } = req.body;
   if (!title || !title.trim()) {
@@ -253,25 +338,27 @@ app.post("/api/tasks", auth, (req, res) => {
   }
 
   const col = column_name || "backlog";
+  // Разрешённые колонки
   const validCols = ["backlog", "todo", "in_progress", "done"];
   if (!validCols.includes(col)) {
     return res.status(400).json({ error: "Invalid column: " + col });
   }
 
-  // Get max position in this column
+  // Вычисляем position: максимальная позиция в колонке + 1
   const row = dbGet(
     "SELECT COALESCE(MAX(position), 0) as max_pos FROM tasks WHERE user_id = ? AND column_name = ?",
     [req.user.id, col]
   );
   const newPos = (row && row.max_pos != null) ? row.max_pos + 1 : 1;
 
-  // Use db.prepare().run() to get last_insert_rowid reliably
+  // Вставляем через prepare (точнее возвращает last_insert_rowid)
   const stmt = db.prepare(
     "INSERT INTO tasks (user_id, title, description, column_name, position, due_date) VALUES (?, ?, ?, ?, ?, ?)"
   );
   stmt.run([req.user.id, title.trim(), description || "", col, newPos, due_date || null]);
   stmt.free();
 
+  // Получаем ID только что вставленной строки
   const lastIdResult = db.exec("SELECT last_insert_rowid() as id");
   let lastId;
   if (lastIdResult && lastIdResult.length > 0 && lastIdResult[0].values && lastIdResult[0].values.length > 0) {
@@ -280,8 +367,8 @@ app.post("/api/tasks", auth, (req, res) => {
 
   const task = lastId ? dbGet("SELECT * FROM tasks WHERE id = ?", [lastId]) : null;
 
+  // Фолбэк: если не удалось получить ID через last_insert_rowid
   if (!task) {
-    // Fallback: get the latest task for this user
     const fallback = dbGet(
       "SELECT * FROM tasks WHERE user_id = ? ORDER BY id DESC LIMIT 1",
       [req.user.id]
@@ -289,7 +376,6 @@ app.post("/api/tasks", auth, (req, res) => {
     if (!fallback) {
       return res.status(500).json({ error: "Failed to create task" });
     }
-    // Use fallback but save after
     saveDb();
     return res.status(201).json({
       task: {
@@ -306,7 +392,6 @@ app.post("/api/tasks", auth, (req, res) => {
   }
 
   saveDb();
-
   res.status(201).json({
     task: {
       id: task.id,
@@ -321,6 +406,8 @@ app.post("/api/tasks", auth, (req, res) => {
   });
 });
 
+// ---- Обновить задачу ----
+// Можно обновить любые поля: title, description, column_name, position, due_date.
 app.put("/api/tasks/:id", auth, (req, res) => {
   const taskId = parseInt(req.params.id);
   const task = dbGet("SELECT * FROM tasks WHERE id = ? AND user_id = ?", [taskId, req.user.id]);
@@ -331,10 +418,12 @@ app.put("/api/tasks/:id", auth, (req, res) => {
 
   const { title, description, column_name, position, due_date } = req.body;
 
+  // Заголовок можно сменить, но нельзя сделать пустым
   if (title !== undefined && title.trim() === "") {
     return res.status(400).json({ error: "Title cannot be empty" });
   }
 
+  // Динамически собираем SET-часть SQL: обновляем только то, что передано
   const updates = [];
   const params = [];
 
@@ -368,6 +457,7 @@ app.put("/api/tasks/:id", auth, (req, res) => {
     dbRun(`UPDATE tasks SET ${updates.join(", ")} WHERE id = ? AND user_id = ?`, params);
   }
 
+  // Возвращаем обновлённую задачу
   const updated = dbGet("SELECT * FROM tasks WHERE id = ?", [taskId]);
   res.json({
     task: {
@@ -383,14 +473,16 @@ app.put("/api/tasks/:id", auth, (req, res) => {
   });
 });
 
-// Batch update positions (for drag & drop)
+// ---- Массовое переупорядочивание (drag & drop) ----
+// Клиент присылает массив { id, column_name, position }.
+// Обновляем все позиции одним запросом (быстрее, чем N отдельных PUT).
 app.post("/api/tasks/reorder", auth, (req, res) => {
   const { tasks: taskUpdates } = req.body;
   if (!Array.isArray(taskUpdates)) {
     return res.status(400).json({ error: "tasks array required" });
   }
 
-  // Use a manual transaction-like approach: run all, save once
+  // Обновляем каждую задачу; сохраняем на диск один раз в конце
   for (const t of taskUpdates) {
     db.run("UPDATE tasks SET column_name = ?, position = ? WHERE id = ? AND user_id = ?", [
       t.column_name,
@@ -404,9 +496,9 @@ app.post("/api/tasks/reorder", auth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Удалить задачу ----
 app.delete("/api/tasks/:id", auth, (req, res) => {
   const taskId = parseInt(req.params.id);
-  // Check existence first
   const task = dbGet("SELECT id FROM tasks WHERE id = ? AND user_id = ?", [taskId, req.user.id]);
   if (!task) {
     return res.status(404).json({ error: "Task not found" });
@@ -416,16 +508,21 @@ app.delete("/api/tasks/:id", auth, (req, res) => {
   res.json({ ok: true });
 });
 
-// SPA fallback: serve index.html for any non-API route
+// ---- SPA fallback ----
+// Все не-API GET-запросы отдаём index.html — нужно для клиентского роутинга
+// и чтобы PWA работал корректно при прямых переходах по URL.
 app.get(/^\/(?!api\/)/, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// ---- Init DB & Start Server ----
+// ============================================================
+//  Инициализация БД и запуск сервера
+// ============================================================
 async function start() {
+  // Загружаем sql.js (WebAssembly-сборка SQLite)
   const SQL = await initSqlJs();
 
-  // Load or create database
+  // Открываем или создаём файл БД
   if (fs.existsSync(DB_PATH)) {
     const fileBuf = fs.readFileSync(DB_PATH);
     db = new SQL.Database(fileBuf);
@@ -435,7 +532,7 @@ async function start() {
     console.log("New database created");
   }
 
-  // Create tables
+  // ---- Создаём таблицы (если их ещё нет) ----
   dbExec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -459,23 +556,24 @@ async function start() {
     )
   `);
 
-  // Migrate: add due_date column if not exists
+  // ---- Миграция: если колонки due_date нет, добавляем ----
   try {
     const cols = db.exec("PRAGMA table_info(tasks)");
     if (cols && cols.length > 0) {
-      const colNames = cols[0].values.map((r) => r[1]); // column name is index 1
+      const colNames = cols[0].values.map((r) => r[1]);
       if (!colNames.includes("due_date")) {
         dbExec("ALTER TABLE tasks ADD COLUMN due_date TEXT NULL");
         console.log("Migration: added due_date column");
       }
     }
   } catch (e) {
-    // Ignore if migration fails (e.g. column already exists in older sql.js)
+    // Не страшно, если миграция не сработала (старая версия sql.js)
   }
 
-  // Seed positions
+  // ---- Сидирование: если position = 0, проставляем по id ----
   dbRun("UPDATE tasks SET position = id WHERE position = 0");
 
+  // ---- Запуск ----
   app.listen(PORT, () => {
     console.log(`Kanban server running on http://localhost:${PORT}`);
   });

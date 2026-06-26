@@ -1,44 +1,61 @@
-Провер* {
+/* ============================================================
+   CSS-сброс — убираем встроенные отступы у всех элементов
+============================================================ */
+* {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+/* ============================================================
+   CSS-переменные (тема оформления)
+   Меняя значения здесь, можно перекрасить всё приложение.
+============================================================ */
 :root {
-  --bg: #f0f2f5;
-  --surface: #ffffff;
-  --text: #1a1a2e;
-  --text-secondary: #6b7280;
-  --border: #e5e7eb;
-  --primary: #4f46e5;
-  --primary-hover: #4338ca;
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
-  --success: #10b981;
-  --low: #10b981;
-  --medium: #f59e0b;
-  --high: #ef4444;
-  --radius: 8px;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --bg: #f0f2f5;                  /* фон страницы */
+  --surface: #ffffff;             /* фон карточек и панелей */
+  --text: #1a1a2e;                /* основной цвет текста */
+  --text-secondary: #6b7280;      /* серый текст (подписи, email) */
+  --border: #e5e7eb;              /* цвет границ */
+  --primary: #4f46e5;             /* основной акцентный цвет (indigo) */
+  --primary-hover: #4338ca;       /* акцентный цвет при наведении */
+  --danger: #ef4444;              /* красный (удаление) */
+  --danger-hover: #dc2626;        /* красный при наведении */
+  --success: #10b981;             /* зелёный (успех) */
+  --low: #10b981;                 /* зелёный — низкий приоритет */
+  --medium: #f59e0b;              /* жёлтый — средний приоритет / сегодня */
+  --high: #ef4444;                /* красный — высокий приоритет / просрочено */
+  --radius: 8px;                  /* скругление углов */
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* тень карточек */
 }
 
+/* ============================================================
+   Базовые стили body
+   Системный шрифт, цвет фона, сглаживание.
+============================================================ */
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased; /* более чёткий текст на macOS/iOS */
 }
 
+/* Утилитарный класс скрытия элемента (display: none) */
 .hidden {
   display: none !important;
 }
 
-/* ===== Auth Screen ===== */
+/* ============================================================
+   Экран аутентификации (логин / регистрация)
+============================================================ */
+
+/* Общий контейнер экрана — на всю высоту окна */
 .screen {
   min-height: 100vh;
 }
 
+/* Центрируем форму логина по вертикали и горизонтали */
 #auth-screen {
   display: flex;
   align-items: center;
@@ -46,13 +63,14 @@ body {
   padding: 1rem;
 }
 
+/* Белая карточка с формой */
 .auth-container {
   background: var(--surface);
   padding: 2.5rem;
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   width: 100%;
-  max-width: 400px;
+  max-width: 400px;        /* не шире 400px даже на десктопе */
   text-align: center;
 }
 
@@ -61,17 +79,20 @@ body {
   margin-bottom: 0.25rem;
 }
 
+/* Подзаголовок под логотипом */
 .auth-subtitle {
   color: var(--text-secondary);
   margin-bottom: 1.5rem;
   font-size: 0.95rem;
 }
 
+/* Заголовок внутри формы (Вход / Регистрация) */
 .auth-form h2 {
   margin-bottom: 1rem;
   font-size: 1.2rem;
 }
 
+/* Поля ввода в форме аутентификации */
 .auth-form input {
   width: 100%;
   padding: 0.75rem;
@@ -83,11 +104,13 @@ body {
   transition: border-color 0.15s;
 }
 
+/* Подсветка поля при фокусе */
 .auth-form input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
 }
 
+/* Ссылка переключения логин ↔ регистрация */
 .auth-switch {
   margin-top: 1rem;
   font-size: 0.9rem;
@@ -100,13 +123,17 @@ body {
   font-weight: 500;
 }
 
+/* Текст ошибки (красный, под формой) */
 .auth-error {
   color: var(--danger);
   font-size: 0.85rem;
   margin-top: 0.5rem;
 }
 
-/* ===== Buttons ===== */
+/* ============================================================
+   Кнопки
+   Три варианта: primary (синяя), outline (прозрачная), danger (красная)
+============================================================ */
 .btn {
   display: inline-block;
   padding: 0.6rem 1.25rem;
@@ -119,10 +146,12 @@ body {
   text-align: center;
 }
 
+/* Лёгкое затемнение при нажатии */
 .btn:active {
   opacity: 0.85;
 }
 
+/* Основная кнопка (синяя, на всю ширину в форме) */
 .btn-primary {
   background: var(--primary);
   color: #fff;
@@ -133,6 +162,7 @@ body {
   background: var(--primary-hover);
 }
 
+/* Контурная кнопка (прозрачный фон + граница) */
 .btn-outline {
   background: transparent;
   border: 1px solid var(--border);
@@ -143,6 +173,7 @@ body {
   background: var(--bg);
 }
 
+/* Кнопка удаления (красная) */
 .btn-danger {
   background: var(--danger);
   color: #fff;
@@ -152,7 +183,11 @@ body {
   background: var(--danger-hover);
 }
 
-/* ===== Board Header ===== */
+/* ============================================================
+   Шапка канбан-доски
+   Прилипает к верху (position: sticky), содержит логотип,
+   email пользователя и кнопку «Выйти».
+============================================================ */
 .board-header {
   display: flex;
   align-items: center;
@@ -162,37 +197,43 @@ body {
   border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 10;               /* чтобы карточки не перекрывали шапку при скролле */
 }
 
 .board-header h1 {
   font-size: 1.3rem;
 }
 
+/* Правая часть шапки: email + кнопка выхода */
 .header-right {
   display: flex;
   align-items: center;
   gap: 1rem;
 }
 
+/* Email пользователя в шапке */
 .user-email {
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
 
-/* ===== Toolbar ===== */
+/* ============================================================
+   Панель инструментов (форма создания задачи)
+============================================================ */
 .toolbar {
   padding: 1rem 1.5rem;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
+/* Форма: инпут + select + кнопка в одну строку */
 .add-task-form {
   display: flex;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-wrap: wrap;           /* на узких экранах поля переносятся */
 }
 
+/* Поле заголовка задачи (растягивается, занимает больше места) */
 .add-task-form input {
   flex: 2;
   min-width: 200px;
@@ -208,6 +249,7 @@ body {
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
 }
 
+/* Выпадающий список выбора колонки */
 .add-task-form select {
   flex: 1;
   min-width: 130px;
@@ -219,31 +261,36 @@ body {
   background: var(--surface);
 }
 
+/* Кнопка «Добавить» не растягивается */
 .add-task-form .btn {
   flex: 0 0 auto;
   width: auto;
 }
 
-/* ===== Board ===== */
+/* ============================================================
+   Канбан-доска (сетка колонок)
+============================================================ */
 .board {
   display: flex;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  min-height: calc(100vh - 120px);
-  overflow-x: auto;
+  min-height: calc(100vh - 120px); /* минимум на весь экран минус шапка */
+  overflow-x: auto;                /* горизонтальный скролл, если колонки не влезают */
 }
 
+/* Одна колонка */
 .column {
   flex: 1;
-  min-width: 260px;
-  max-width: 360px;
+  min-width: 260px;          /* минимальная ширина (на мобильных — одна колонка) */
+  max-width: 360px;          /* максимальная ширина (на десктопе) */
   background: var(--surface);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   display: flex;
-  flex-direction: column;
+  flex-direction: column;    /* заголовок сверху, тело снизу */
 }
 
+/* Заголовок колонки: иконка, название, счётчик */
 .column-header {
   padding: 0.75rem 1rem;
   font-weight: 600;
@@ -254,6 +301,7 @@ body {
   align-items: center;
 }
 
+/* Счётчик задач (круглый серый бейдж) */
 .column-count {
   background: var(--bg);
   color: var(--text-secondary);
@@ -262,75 +310,83 @@ body {
   border-radius: 10px;
 }
 
+/* Название колонки (contenteditable — можно редактировать) */
 .col-title {
-  border-bottom: 2px dashed transparent;
+  border-bottom: 2px dashed transparent; /* пунктирная линия при наведении */
   border-radius: 4px;
   padding: 0 4px;
   cursor: text;
   transition: background 0.15s, border-color 0.15s;
   outline: none;
 }
+
+/* При наведении показываем пунктир — hint, что можно редактировать */
 .col-title:hover {
   background: rgba(79, 70, 229, 0.06);
   border-bottom-color: var(--primary);
 }
+
+/* При редактировании — более заметный фон и подчёркивание */
 .col-title:focus {
   background: rgba(79, 70, 229, 0.1);
   border-bottom-color: var(--primary);
 }
 
+/* Тело колонки — сюда SortableJS вставляет карточки */
 .column-body {
   flex: 1;
-  min-height: 80px;
+  min-height: 80px;          /* даже пустая колонка принимает карточки при D&D */
   padding: 0.5rem;
-  overflow-y: auto;
+  overflow-y: auto;           /* скролл, если задач больше высоты экрана */
 }
 
+/* Подсветка колонки при наведении перетаскиваемой карточки */
 .column.drag-over {
   background: rgba(79, 70, 229, 0.05);
 }
 
-/* ===== Task Card ===== */
+/* ============================================================
+   Карточка задачи
+============================================================ */
 .task-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.75rem;
   margin-bottom: 0.5rem;
-  cursor: grab;
+  cursor: grab;              /* hint, что карточку можно перетащить */
   transition: box-shadow 0.15s;
+  /* Левая цветная полоса — индикатор срока */
   border-left: 3px solid transparent;
 }
 
+/* Тень при наведении */
 .task-card:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-.task-card.due-none {
-  border-left-color: #9ca3af;
-}
-.task-card.due-future {
-  border-left-color: #3b82f6;
-}
-.task-card.due-today {
-  border-left-color: var(--medium);
-}
-.task-card.due-overdue {
-  border-left-color: var(--high);
-}
+/* Цвет левой полосы в зависимости от срока */
+.task-card.due-none    { border-left-color: #9ca3af; }  /* серый — без срока */
+.task-card.due-future  { border-left-color: #3b82f6; }  /* синий — будущая дата */
+.task-card.due-today   { border-left-color: var(--medium); } /* жёлтый — сегодня */
+.task-card.due-overdue { border-left-color: var(--high); }   /* красный — просрочено */
 
+/* Заголовок задачи в карточке */
 .task-title {
   font-weight: 500;
   font-size: 0.9rem;
   margin-bottom: 0.25rem;
-  word-break: break-word;
+  word-break: break-word;    /* длинные слова переносятся */
 }
 
+/* Список пунктов (подзадач) внутри карточки */
 .task-items {
   list-style: none;
   padding: 0;
   margin: 0.25rem 0 0.5rem 0;
 }
+
+/* Один пункт: серый текст с тире перед ним */
 .task-items li {
   font-size: 0.8rem;
   color: var(--text-secondary);
@@ -339,12 +395,16 @@ body {
   position: relative;
   padding-left: 1rem;
 }
+
+/* Псевдоэлемент «–» перед каждым пунктом */
 .task-items li::before {
   content: "–";
   position: absolute;
   left: 0;
   color: #9ca3af;
 }
+
+/* Инпут пункта в модалке */
 .task-item-input {
   width: 100%;
   padding: 0.5rem;
@@ -355,40 +415,52 @@ body {
   font-family: inherit;
   margin-bottom: 0.35rem;
 }
+
 .task-item-input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
 }
 
+/* Мета-информация карточки (срок) */
 .task-meta {
   font-size: 0.75rem;
   color: #000;
   font-weight: 700;
 }
 
+/* ============================================================
+   Drag & Drop (SortableJS)
+   Стили для «призрака» и перетаскиваемой карточки.
+============================================================ */
+
+/* Карточка, которая осталась на месте (полупрозрачная) */
 .sortable-ghost {
   opacity: 0.3;
   background: var(--bg);
 }
 
+/* Карточка, которую пользователь держит «в руке» */
 .sortable-drag {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
   opacity: 0.95;
   cursor: grabbing;
 }
 
-/* ===== Modal ===== */
+/* ============================================================
+   Модальное окно (редактирование задачи)
+============================================================ */
 .modal {
   position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  inset: 0;                  /* на весь экран (сверху, справа, снизу, слева = 0) */
+  background: rgba(0, 0, 0, 0.4); /* полупрозрачный оверлей */
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: 100;              /* поверх всего */
   padding: 1rem;
 }
 
+/* Белая карточка модалки */
 .modal-content {
   background: var(--surface);
   border-radius: var(--radius);
@@ -396,13 +468,14 @@ body {
   width: 100%;
   max-width: 440px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
-  position: relative;
+  position: relative;        /* для абсолютного позиционирования кнопки закрытия */
 }
 
 .modal-content h3 {
   margin-bottom: 1rem;
 }
 
+/* Кнопка закрытия [×] в правом верхнем углу */
 .modal-close {
   position: absolute;
   top: 0.75rem;
@@ -417,6 +490,7 @@ body {
   color: var(--text);
 }
 
+/* Подписи к полям в модалке */
 .modal-content label {
   display: block;
   font-size: 0.8rem;
@@ -426,6 +500,7 @@ body {
   color: var(--text-secondary);
 }
 
+/* Поля ввода внутри модалки */
 .modal-content input,
 .modal-content textarea,
 .modal-content select {
@@ -445,6 +520,7 @@ body {
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.15);
 }
 
+/* Кнопки внизу модалки (Сохранить / Удалить / Отмена) */
 .modal-actions {
   display: flex;
   gap: 0.5rem;
@@ -454,30 +530,39 @@ body {
 
 .modal-actions .btn {
   width: auto;
-  flex: 1;
+  flex: 1;                   /* равномерно распределяются */
 }
 
-/* ===== Responsive ===== */
+/* ============================================================
+   Адаптивность: мобильные экраны (≤ 900px)
+   Колонки выстраиваются вертикально,
+   шапка и форма создания — тоже.
+============================================================ */
 @media (max-width: 900px) {
+  /* Колонки — одна под другой */
   .board {
     flex-direction: column;
     align-items: stretch;
   }
 
+  /* Убираем ограничение максимальной ширины */
   .column {
     max-width: none;
   }
 
+  /* Шапка — элементы друг под другом */
   .board-header {
     flex-direction: column;
     gap: 0.5rem;
     align-items: flex-start;
   }
 
+  /* Форма добавления задачи — поля в столбик */
   .add-task-form {
     flex-direction: column;
   }
 
+  /* Убираем мин. ширину у полей формы */
   .add-task-form input,
   .add-task-form select {
     min-width: auto;

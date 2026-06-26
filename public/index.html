@@ -2,35 +2,76 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
+
+  <!--
+    viewport-fit=cover — PWA на iPhone X+ заполняет всю область экрана
+    (включая «чёлку» и безопасную зону).
+  -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="description" content="Таск-менеджер канбан с голосовым вводом">
+
+  <!--
+    theme-color — цвет строки состояния (верхняя полоска) для PWA.
+    Используем тёмно-синий, как у шапки.
+  -->
   <meta name="theme-color" content="#1a1a2e">
+
+  <!--
+    apple-mobile-web-app-… — разрешаем открывать как отдельное PWA-приложение
+    на iOS (без адресной строки Safari).
+  -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <!--
+    manifest.json — файл манифеста PWA:
+    имя, иконки, стартовый URL, ориентация.
+  -->
   <link rel="manifest" href="/manifest.json">
+
+  <!-- Иконка для iOS (apple-touch-icon) -->
   <link rel="apple-touch-icon" href="/icon-192.png">
+
   <title>Канбан</title>
+
+  <!-- Таблица стилей -->
   <link rel="stylesheet" href="/style.css">
+
+  <!--
+    SortableJS — библиотека для drag & drop.
+    Загружается с CDN, версия зафиксирована.
+    Если CDN недоступен — drag & drop не будет работать,
+    но приложение останется функциональным.
+  -->
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 </head>
 <body>
-  <!-- Auth screen -->
+
+  <!-- =========================================================
+    Экран аутентификации (логин / регистрация)
+    Скрывается (.hidden) после успешного входа.
+  ========================================================= -->
   <div id="auth-screen" class="screen">
     <div class="auth-container">
       <h1>📋 Канбан</h1>
       <p class="auth-subtitle">Таск-менеджер с голосовым вводом</p>
 
-      <!-- Login form -->
+      <!-- ---- Форма логина ---- -->
       <form id="login-form" class="auth-form">
         <h2>Вход</h2>
+        <!--
+          autocomplete — браузер сам предложит сохранённые email/пароль.
+          minlength="4" — минимальная длина пароля (дублирует валидацию в JS).
+        -->
         <input type="email" id="login-email" placeholder="Email" required autocomplete="email">
         <input type="password" id="login-password" placeholder="Пароль" required autocomplete="current-password" minlength="4">
         <button type="submit" class="btn btn-primary">Войти</button>
         <p class="auth-switch">Нет аккаунта? <a href="#" id="show-register">Регистрация</a></p>
+        <!-- Контейнер для ошибки (заполняется из JS) -->
         <p class="auth-error" id="login-error"></p>
       </form>
 
-      <!-- Register form -->
+      <!-- ---- Форма регистрации (по умолчанию скрыта) ---- -->
       <form id="register-form" class="auth-form hidden">
         <h2>Регистрация</h2>
         <input type="email" id="register-email" placeholder="Email" required autocomplete="email">
@@ -42,8 +83,15 @@
     </div>
   </div>
 
-  <!-- Kanban board screen -->
+  <!-- =========================================================
+    Экран канбан-доски
+    Скрыт (.hidden), пока пользователь не войдёт.
+  ========================================================= -->
   <div id="board-screen" class="screen hidden">
+
+    <!--
+      Шапка доски: логотип, email пользователя, кнопка «Выйти».
+    -->
     <header class="board-header">
       <h1>📋 Канбан</h1>
       <div class="header-right">
@@ -52,6 +100,10 @@
       </div>
     </header>
 
+    <!--
+      Панель инструментов: форма быстрого создания задачи.
+      Поля: заголовок (обязательное), колонка, дата выполнения.
+    -->
     <div class="toolbar">
       <form id="add-task-form" class="add-task-form">
         <input type="text" id="new-task-title" placeholder="Новая задача..." required>
@@ -66,35 +118,67 @@
       </form>
     </div>
 
+    <!--
+      Основная сетка колонок канбан-доски.
+      Каждая колонка:
+        column-header — заголовок + счётчик задач
+        column-body   — контейнер для карточек (сюда SortableJS вставляет задачи)
+      col-title с contenteditable — пользователь может переименовать колонку
+        двойным кликом.
+    -->
     <div class="board" id="kanban-board">
+
+      <!-- Колонка "Бэклог" -->
       <div class="column" data-column="backlog">
         <div class="column-header">📥 <span class="col-title" contenteditable="true" data-col="backlog">Бэклог</span> <span class="column-count" id="count-backlog">0</span></div>
         <div class="column-body" id="col-backlog"></div>
       </div>
+
+      <!-- Колонка "To Do" -->
       <div class="column" data-column="todo">
         <div class="column-header">📝 <span class="col-title" contenteditable="true" data-col="todo">To Do</span> <span class="column-count" id="count-todo">0</span></div>
         <div class="column-body" id="col-todo"></div>
       </div>
+
+      <!-- Колонка "В процессе" -->
       <div class="column" data-column="in_progress">
         <div class="column-header">⚙️ <span class="col-title" contenteditable="true" data-col="in_progress">В процессе</span> <span class="column-count" id="count-in_progress">0</span></div>
         <div class="column-body" id="col-in_progress"></div>
       </div>
+
+      <!-- Колонка "Готово" -->
       <div class="column" data-column="done">
         <div class="column-header">✅ <span class="col-title" contenteditable="true" data-col="done">Готово</span> <span class="column-count" id="count-done">0</span></div>
         <div class="column-body" id="col-done"></div>
       </div>
     </div>
 
-    <!-- Task edit modal -->
+    <!-- =========================================================
+      Модальное окно редактирования задачи
+      Скрыто (.hidden), открывается по клику на карточку.
+      Содержит:
+        - Заголовок (обязательное)
+        - Описание (5 инпутов для пунктов)
+        - Выбор колонки (select)
+        - Дату выполнения (date picker)
+        - Кнопки: Сохранить, Удалить, Отмена
+    ========================================================= -->
     <div id="task-modal" class="modal hidden">
       <div class="modal-content">
+        <!-- Кнопка закрытия [×] -->
         <span class="modal-close" id="modal-close">&times;</span>
         <h3>Редактировать задачу</h3>
         <form id="edit-task-form">
+          <!-- Скрытое поле с ID задачи -->
           <input type="hidden" id="edit-task-id">
           <label>Заголовок</label>
           <input type="text" id="edit-task-title" required>
           <label>Описание (пункты)</label>
+          <!--
+            Пункты описания — 5 текстовых полей.
+            description в БД хранится как JSON-массив строк.
+            При открытии модалки поля заполняются из этого массива.
+          -->
           <div id="edit-task-items">
             <input type="text" class="task-item-input" placeholder="Пункт 1">
             <input type="text" class="task-item-input" placeholder="Пункт 2">
@@ -121,6 +205,13 @@
     </div>
   </div>
 
+  <!--
+    Подключаем app.js в конце <body>:
+      - DOM уже построен, можно сразу вешать обработчики
+      - Не блокирует рендеринг страницы
+    SortableJS загружен в <head> (синхронно), потому что
+    app.js использует Sortable при инициализации.
+  -->
   <script src="/app.js"></script>
 </body>
 </html>

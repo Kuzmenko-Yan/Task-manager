@@ -1,20 +1,34 @@
-// ===== Auth =====
+// ============================================================
+//  Аутентификация: access + refresh токены, автообновление
+// ============================================================
 const API = "/api";
+
+// При старте достаём токены из localStorage (если залогинены ранее)
 let accessToken = localStorage.getItem("kanban_access_token");
 let refreshToken = localStorage.getItem("kanban_refresh_token");
 let userEmail = localStorage.getItem("kanban_email");
+
+// ---- Механизм очереди запросов на время обновления токена ----
+// Если несколько запросов одновременно получают 401,
+// только первый идёт на /api/auth/refresh, остальные ждут в очереди.
 let isRefreshing = false;
 let refreshSubscribers = [];
 
+// Подписаться на получение нового токена (колбэк вызовется после обновления)
 function subscribeTokenRefresh(cb) {
   refreshSubscribers.push(cb);
 }
 
+// Оповестить всех подписчиков о новом токене и очистить очередь
 function onRefreshed(newAccessToken) {
   refreshSubscribers.forEach((cb) => cb(newAccessToken));
   refreshSubscribers = [];
 }
 
+/**
+ * Обработать HTTP-ответ от сервера.
+ * Возвращает распарсенный JSON или выбрасывает ошибку.
+ */
 function handleResponse(r) {
   if (r.status === 401) {
     logout();
@@ -22,6 +36,7 @@ function handleResponse(r) {
   }
   const ct = r.headers.get("content-type") || "";
   if (!ct.includes("application/json")) {
+    // Ответ не JSON (например, HTML-ошибка) — читаем как текст
     return r.text().then((text) => {
       throw new Error(text.slice(0, 200) || "Unexpected response");
     });
@@ -32,17 +47,25 @@ function handleResponse(r) {
   });
 }
 
+/**
+ * Основная функция для API-запросов.
+ * Автоматически подставляет access-токен в заголовок.
+ * При 401 пытается обновить токен через refresh и повторить запрос.
+ */
 function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...options.headers };
   if (accessToken) headers["Authorization"] = "Bearer " + accessToken;
 
   return fetch(API + path, { ...options, headers }).then(async (r) => {
+    // Если получили 401 — токен просрочен, пробуем обновить
     if (r.status === 401 && !path.startsWith("/auth/")) {
       if (!refreshToken) {
+        // Нет refresh-токена — сразу разлогиниваем
         logout();
         throw new Error("Unauthorized");
       }
 
+      // Если обновление уже идёт — ставим запрос в очередь
       if (isRefreshing) {
         return new Promise((resolve) => {
           subscribeTokenRefresh((newToken) => {
@@ -53,6 +76,7 @@ function api(path, options = {}) {
         });
       }
 
+      // Первый запрос, получивший 401 — начинает обновление
       isRefreshing = true;
       try {
         const refreshRes = await fetch(API + "/auth/refresh", {
@@ -63,16 +87,20 @@ function api(path, options = {}) {
         const refreshData = await refreshRes.json();
         if (!refreshRes.ok) throw new Error(refreshData.error || "Refresh failed");
 
+        // Сохраняем новую пару токенов
         accessToken = refreshData.accessToken;
         refreshToken = refreshData.refreshToken;
         localStorage.setItem("kanban_access_token", accessToken);
         localStorage.setItem("kanban_refresh_token", refreshToken);
+        // Оповещаем очередь
         onRefreshed(accessToken);
 
+        // Повторяем исходный запрос с новым токеном
         const newHeaders = { "Content-Type": "application/json", ...options.headers };
         newHeaders["Authorization"] = "Bearer " + accessToken;
         return fetch(API + path, { ...options, headers: newHeaders }).then(handleResponse);
       } catch {
+        // Не удалось обновить — разлогиниваем
         logout();
         throw new Error("Session expired. Please log in again.");
       } finally {
@@ -84,6 +112,11 @@ function api(path, options = {}) {
   });
 }
 
+/**
+ * Выход из системы:
+ * очищает токены, удаляет из localStorage, показывает форму логина.
+ * Попутно отправляет /api/auth/logout, чтобы отозвать refresh-токен на сервере.
+ */
 async function logout() {
   const currentRefresh = refreshToken;
   accessToken = null;
@@ -105,11 +138,12 @@ async function logout() {
         body: JSON.stringify({ refreshToken: currentRefresh }),
       });
     } catch {
-      // ignore network errors on logout
+      // Сеть недоступна — не страшно, токены локально уже удалены
     }
   }
 }
 
+// ---- Обёртки для логина/регистрации ----
 function login(email, pwd) {
   return api("/auth/login", {
     method: "POST",
@@ -124,27 +158,40 @@ function register(email, pwd) {
   });
 }
 
+/**
+ * Переключение между экранами: форма логина / доска.
+ * Используется класс .hidden для скрытия.
+ */
 function showScreen(name) {
   document.getElementById("auth-screen").classList.toggle("hidden", name !== "auth");
   document.getElementById("board-screen").classList.toggle("hidden", name !== "board");
 }
 
-// ===== Auth Forms =====
+// ============================================================
+//  Формы логина и регистрации (переключение, отправка, ошибки)
+// ============================================================
 const loginForm = document.getElementById("login-form");
 const registerForm = document.getElementById("register-form");
 
+// Кнопка «Регистрация» — переключает с логина на форму регистрации
 document.getElementById("show-register").addEventListener("click", (e) => {
   e.preventDefault();
   loginForm.classList.add("hidden");
   registerForm.classList.remove("hidden");
 });
 
+// Кнопка «Войти» — обратно на форму логина
 document.getElementById("show-login").addEventListener("click", (e) => {
   e.preventDefault();
   registerForm.classList.add("hidden");
   loginForm.classList.remove("hidden");
 });
 
+/**
+ * Логин: отправляем email/пароль на /api/auth/login.
+ * При успехе сохраняем токены в localStorage и показываем доску.
+ * При ошибке — выводим текст под формой.
+ */
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("login-email").value.trim();
@@ -170,6 +217,10 @@ loginForm.addEventListener("submit", async (e) => {
   }
 });
 
+/**
+ * Регистрация: минимальная проверка (пароль ≥ 4 символов),
+ * затем POST /api/auth/register. Логика как у логина.
+ */
 registerForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const email = document.getElementById("register-email").value.trim();
@@ -200,9 +251,14 @@ registerForm.addEventListener("submit", async (e) => {
   }
 });
 
+// Кнопка «Выйти» в шапке доски
 document.getElementById("logout-btn").addEventListener("click", logout);
 
-// ===== Kanban Board =====
+// ============================================================
+//  Kanban-доска: колонки, рендеринг, кастомизация заголовков
+// ============================================================
+
+// Порядок колонок на доске (ключи совпадают с column_name в БД)
 const columnsOrder = ["backlog", "todo", "in_progress", "done"];
 const columnNames = {
   backlog: "Бэклог",
@@ -210,10 +266,17 @@ const columnNames = {
   in_progress: "В процессе",
   done: "Готово",
 };
-let allTasks = [];
-let previousTasks = []; // snapshot for rollback on D&D error
 
-// ===== Custom column names (stored in localStorage) =====
+// Все задачи текущего пользователя (загружаются с сервера)
+let allTasks = [];
+
+// Снимок состояния задач до drag&drop — нужен для отката при ошибке синхронизации
+let previousTasks = [];
+
+// ============================================================
+//  Пользовательские названия колонок (хранятся в localStorage)
+//  Пользователь может переименовать колонку, дважды кликнув по заголовку.
+// ============================================================
 const DEFAULT_COLUMN_NAMES = {
   backlog: "Бэклог",
   todo: "To Do",
@@ -221,6 +284,7 @@ const DEFAULT_COLUMN_NAMES = {
   done: "Готово",
 };
 
+// Загрузить кастомные названия из localStorage, дополнив дефолтами
 function loadColumnNames() {
   try {
     const saved = JSON.parse(localStorage.getItem("kanban_column_names") || "{}");
@@ -230,37 +294,48 @@ function loadColumnNames() {
   }
 }
 
+// Сохранить названия в localStorage
 function saveColumnNames(names) {
   localStorage.setItem("kanban_column_names", JSON.stringify(names));
 }
 
+// Получить текущие названия колонок
 function getColumnNames() {
   return loadColumnNames();
 }
 
+/**
+ * Обновить заголовки колонок в DOM и в <select>-ах (форма создания / редактирования).
+ * Вызывается после переименования или при первоначальной загрузке.
+ */
 function updateColumnTitles() {
   const names = getColumnNames();
   columnsOrder.forEach((col) => {
-    // Update header span
+    // Заголовок колонки (<span contenteditable>)
     const span = document.querySelector(`.col-title[data-col="${col}"]`);
     if (span && span.textContent.trim() !== names[col]) {
       span.textContent = names[col];
     }
 
-    // Update selects: new-task-column, edit-task-column
+    // Опции в выпадающих списках выбора колонки
     document.querySelectorAll("select option[value='" + col + "']").forEach((opt) => {
       opt.textContent = names[col];
     });
   });
 }
 
+/**
+ * Включить редактирование заголовков колонок по двойному клику.
+ * При потере фокуса (blur) сохраняем новое имя.
+ * Enter завершает редактирование.
+ */
 function initColumnTitleEditing() {
   document.querySelectorAll(".col-title").forEach((span) => {
     span.addEventListener("blur", () => {
       const col = span.dataset.col;
       const newName = span.textContent.trim();
       if (!newName || newName === "") {
-        // Reset to default if empty
+        // Пустое имя — сбрасываем на дефолтное
         span.textContent = DEFAULT_COLUMN_NAMES[col] || col;
         return;
       }
@@ -270,7 +345,6 @@ function initColumnTitleEditing() {
       updateColumnTitles();
     });
 
-    // Prevent newlines when pressing Enter
     span.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -279,6 +353,8 @@ function initColumnTitleEditing() {
     });
   });
 }
+
+// ---- Загрузка задач с сервера и рендеринг доски ----
 
 function loadTasks() {
   api("/tasks")
@@ -291,6 +367,14 @@ function loadTasks() {
     });
 }
 
+/**
+ * Форматировать срок задачи для отображения в карточке.
+ * Возвращает HTML с классом:
+ *   due-none     — без срока
+ *   due-overdue  — просрочено
+ *   due-today    — сегодня
+ *   due-future   — будущая дата
+ */
 function formatDue(due_date) {
   if (!due_date) return '<span class="due-none">Без срока</span>';
   const [y, m, d] = due_date.split("-");
@@ -305,6 +389,7 @@ function formatDue(due_date) {
   return '<span class="due-future">⏳ ' + dateStr + "</span>";
 }
 
+// CSS-класс для карточки в зависимости от срока
 function dueClass(due_date) {
   if (!due_date) return "due-none";
   const today = new Date();
@@ -316,16 +401,24 @@ function dueClass(due_date) {
   return "due-future";
 }
 
+/**
+ * Распарсить description задачи в массив пунктов.
+ * description хранится как JSON-массив строк.
+ * Если это старый формат (просто текст) — оборачиваем в массив из одного элемента.
+ */
 function parseItems(desc) {
   if (!desc) return [];
   try {
     const arr = JSON.parse(desc);
     if (Array.isArray(arr)) return arr.filter(Boolean);
   } catch {}
-  // Fallback: treat old plain text as a single item
   return desc.trim() ? [desc.trim()] : [];
 }
 
+/**
+ * Собрать HTML-содержимое карточки задачи:
+ * заголовок, список пунктов, срок.
+ */
 function buildCardHtml(task) {
   const items = parseItems(task.description);
   const itemsHtml = items.length > 0
@@ -338,28 +431,33 @@ function buildCardHtml(task) {
   `;
 }
 
+/**
+ * Отрисовать все колонки доски.
+ * Фильтруем задачи по column_name и строим HTML для каждой колонки.
+ * Сравниваем с текущим innerHTML — если не изменился, DOM не трогаем
+ * (избегаем лишних перерисовок).
+ * На каждую карточку вешаем обработчик клика — открытие модалки.
+ */
 function renderBoard() {
   columnsOrder.forEach((col) => {
     const body = document.getElementById("col-" + col);
     const tasks = allTasks.filter((t) => t.column_name === col);
     document.getElementById("count-" + col).textContent = tasks.length;
 
-    // Build new HTML
     const newHtml = tasks.map((task) => {
       return `<div class="task-card ${dueClass(task.due_date)}" data-id="${task.id}">${buildCardHtml(task)}</div>`;
     }).join("");
 
-    // Only replace if content actually changed (avoids unnecessary DOM thrashing)
     if (body.innerHTML !== newHtml) {
       body.innerHTML = newHtml;
     }
 
-    // Re-bind click handlers to cards in this column
+    // Вешаем обработчики клика (открытие модалки) на каждую карточку
     body.querySelectorAll(".task-card").forEach((card) => {
       const taskId = parseInt(card.dataset.id);
       const task = allTasks.find((t) => t.id === taskId);
       if (task) {
-        // Remove previous listener clone by replacing with a new one
+        // cloneNode + replace убирает старый обработчик, чтобы не дублировались
         const newCard = card.cloneNode(true);
         newCard.addEventListener("click", () => openModal(task));
         card.replaceWith(newCard);
@@ -368,6 +466,7 @@ function renderBoard() {
   });
 }
 
+// Обновить счётчики задач в заголовках колонок (без перерисовки всей доски)
 function updateColumnCounts() {
   columnsOrder.forEach((col) => {
     const tasks = allTasks.filter((t) => t.column_name === col);
@@ -375,6 +474,7 @@ function updateColumnCounts() {
   });
 }
 
+// Экранирование HTML-спецсимволов (защита от XSS)
 function escapeHtml(str) {
   if (!str) return "";
   const div = document.createElement("div");
@@ -382,17 +482,20 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-// ===== Add Task =====
+// ============================================================
+//  Создание новой задачи (форма «Добавить задачу»)
+// ============================================================
 document.getElementById("add-task-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const titleInput = document.getElementById("new-task-title");
   const columnSelect = document.getElementById("new-task-column");
-    const dueInput = document.getElementById("new-task-due");
-    const title = titleInput.value.trim();
+  const dueInput = document.getElementById("new-task-due");
+  const title = titleInput.value.trim();
 
   if (!title) return;
 
   try {
+    // POST /api/tasks — заголовок, колонка, срок
     const data = await api("/tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -402,7 +505,7 @@ document.getElementById("add-task-form").addEventListener("submit", async (e) =>
       }),
     });
     titleInput.value = "";
-    // Add new task to local state and render (avoids full reload)
+    // Оптимистично добавляем задачу в локальный стейт без перезагрузки с сервера
     if (data.task) {
       allTasks.push(data.task);
       renderBoard();
@@ -414,42 +517,57 @@ document.getElementById("add-task-form").addEventListener("submit", async (e) =>
   }
 });
 
-// ===== Drag & Drop =====
+// ============================================================
+//  Drag & Drop (SortableJS)
+//  Позволяет перетаскивать задачи между колонками и менять порядок.
+//  Применяет оптимистичный подход: сразу меняем DOM/стейт,
+//  затем синхронизируем с сервером через POST /api/tasks/reorder.
+//  При ошибке синхронизации — откатываем и перезагружаем с сервера.
+// ============================================================
 function initSortable() {
   columnsOrder.forEach((col) => {
     const el = document.getElementById("col-" + col);
     new Sortable(el, {
-      group: "kanban",
-      animation: 150,
+      group: "kanban",             // можно перетаскивать между колонками
+      animation: 150,              // плавная анимация перемещения
       easing: "cubic-bezier(0.2, 0, 0, 1)",
-      ghostClass: "sortable-ghost",
-      dragClass: "sortable-drag",
+      ghostClass: "sortable-ghost", // класс для «призрака» перетаскиваемой карточки
+      dragClass: "sortable-drag",   // класс для исходной карточки во время перетаскивания
+
+      /**
+       * onEnd — вызывается, когда пользователь отпустил карточку.
+       * SortableJS уже переместил элемент в DOM, нам нужно:
+       *   1. Сохранить снимок allTasks (для отката при ошибке)
+       *   2. Собрать новый порядок из DOM
+       *   3. Обновить локальный стейт
+       *   4. Отправить изменения на сервер
+       */
       onEnd: function (evt) {
-        // Save snapshot before mutations for rollback
+        // Снимок до изменений — для отката при ошибке синхронизации
         previousTasks = allTasks.map((t) => ({ ...t }));
 
-        // Determine target column from the target list
+        // Определяем целевую колонку (куда перетащили)
         const targetCol = evt.to.closest(".column-body").id.replace("col-", "");
 
-        // Build updates from actual DOM state (SortableJS already moved elements)
+        // Собираем массив обновлений из текущего состояния DOM
         const updates = [];
         columnsOrder.forEach((c) => {
           const cards = document.querySelectorAll("#col-" + c + " .task-card");
           cards.forEach((card, i) => {
             const cardId = parseInt(card.dataset.id);
-            // Ensure target column is applied for the dragged element
+            // Для перетаскиваемого элемента гарантируем правильную колонку
             const effectiveColumn = (c === targetCol && card.dataset.id === String(evt.item.dataset.id))
               ? targetCol
               : c;
             updates.push({
               id: cardId,
               column_name: effectiveColumn,
-              position: i,
+              position: i, // позиция в колонке (0-based)
             });
           });
         });
 
-        // Optimistic update: write new column/position into allTasks
+        // Оптимистичное обновление локального стейта
         allTasks = allTasks.map((t) => {
           const upd = updates.find((u) => u.id === t.id);
           if (upd) {
@@ -458,7 +576,7 @@ function initSortable() {
           return t;
         });
 
-        // Re-sort allTasks to match new positions within each column
+        // Пересортировка allTasks согласно новым позициям
         const sorted = [];
         columnsOrder.forEach((c) => {
           const colTasks = allTasks
@@ -468,18 +586,17 @@ function initSortable() {
         });
         allTasks = sorted;
 
-        // Update counts only — don't rebuild DOM (Sortable already did)
+        // Обновляем счётчики (DOM перестраивать не нужно — SortableJS уже всё сделал)
         updateColumnCounts();
 
-        // Sync with server
+        // Синхронизация с сервером
         api("/tasks/reorder", {
           method: "POST",
           body: JSON.stringify({ tasks: updates }),
         }).catch((err) => {
           console.error("Reorder sync failed:", err);
-          // Rollback to previous state
+          // При ошибке: откатываем стейт и перезагружаем доску с сервера
           allTasks = previousTasks.map((t) => ({ ...t }));
-          // Reload from server to get authoritative state
           loadTasks();
         });
       },
@@ -487,12 +604,18 @@ function initSortable() {
   });
 }
 
-// ===== Modal =====
+// ============================================================
+//  Модальное окно: просмотр, редактирование, удаление задачи
+// ============================================================
 const modal = document.getElementById("task-modal");
 const modalClose = document.getElementById("modal-close");
 const modalCancel = document.getElementById("modal-cancel");
 const editForm = document.getElementById("edit-task-form");
 
+/**
+ * Открыть модалку и заполнить поля данными задачи.
+ * description парсится из JSON-массива в отдельные инпуты.
+ */
 function openModal(task) {
   document.getElementById("edit-task-id").value = task.id;
   document.getElementById("edit-task-title").value = task.title;
@@ -504,24 +627,35 @@ function openModal(task) {
   modal.classList.remove("hidden");
 }
 
+// Закрыть модалку
 function closeModal() {
   modal.classList.add("hidden");
 }
 
+// Закрытие по кнопкам [×], «Отмена» и клику на фон (оверлей)
 modalClose.addEventListener("click", closeModal);
 modalCancel.addEventListener("click", closeModal);
 modal.addEventListener("click", (e) => {
   if (e.target === modal) closeModal();
 });
 
+/**
+ * Сохранение изменений задачи (PUT /api/tasks/:id).
+ * Собирает заголовок, пункты (массив → JSON), колонку, срок.
+ * После успеха обновляет локальный стейт и перерисовывает доску.
+ */
 editForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = parseInt(document.getElementById("edit-task-id").value);
   const title = document.getElementById("edit-task-title").value.trim();
-  const rawItems = Array.from(document.querySelectorAll("#edit-task-items .task-item-input")).map(inp => inp.value.trim()).filter(Boolean);
+  // Собрать непустые пункты из инпутов
+  const rawItems = Array.from(
+    document.querySelectorAll("#edit-task-items .task-item-input")
+  ).map(inp => inp.value.trim()).filter(Boolean);
+  // description хранится как JSON-массив строк
   const description = rawItems.length > 0 ? JSON.stringify(rawItems) : "";
   const column_name = document.getElementById("edit-task-column").value;
-    const due_date = document.getElementById("edit-task-due").value || null;
+  const due_date = document.getElementById("edit-task-due").value || null;
 
   if (!title) {
     alert("Заголовок не может быть пустым");
@@ -533,7 +667,7 @@ editForm.addEventListener("submit", async (e) => {
       method: "PUT",
       body: JSON.stringify({ title, description, column_name, due_date }),
     });
-    // Update local state
+    // Обновить локальный стейт (если сервер вернул обновлённую задачу)
     if (data.task) {
       allTasks = allTasks.map((t) => (t.id === data.task.id ? data.task : t));
       renderBoard();
@@ -546,6 +680,7 @@ editForm.addEventListener("submit", async (e) => {
   }
 });
 
+// Кнопка «Удалить» в модалке — DELETE /api/tasks/:id
 document.getElementById("delete-task-btn").addEventListener("click", async () => {
   const id = parseInt(document.getElementById("edit-task-id").value);
   if (!confirm("Удалить задачу?")) return;
@@ -560,9 +695,11 @@ document.getElementById("delete-task-btn").addEventListener("click", async () =>
   }
 });
 
-// ===== Init =====
+// ============================================================
+//  Инициализация приложения при загрузке страницы
+// ============================================================
 if (accessToken && userEmail) {
-  // Verify token is still valid before showing board
+  // Если токен есть в localStorage — проверяем его валидность через GET /api/me
   api("/me")
     .then(() => {
       document.getElementById("user-email-display").textContent = userEmail;
@@ -572,16 +709,20 @@ if (accessToken && userEmail) {
       loadTasks();
     })
     .catch(() => {
-      // Token expired or invalid
+      // Токен просрочен или невалиден — выходим
       logout();
     });
 } else {
+  // Нет токена — показываем форму логина
   showScreen("auth");
 }
 
+// Инициализируем drag&drop (SortableJS) для всех колонок
 initSortable();
 
-// ===== PWA Service Worker =====
+// ============================================================
+//  Регистрация Service Worker для PWA (офлайн-поддержка)
+// ============================================================
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
