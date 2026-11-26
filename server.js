@@ -1,12 +1,27 @@
 // ============================================================
-//  Kanban Server — Express + SQLite (sql.js) + JWT-аутентификация
+//  Kanban Server — Express + Supabase (Postgres) + JWT
+//  + авторизация через Telegram Mini App (initData)
+// ============================================================
+//
+//  Переменные окружения (см. .env.example):
+//    PORT                      — порт сервера (по умолчанию 3000)
+//    JWT_SECRET                — секрет для подписи JWT (обязателен)
+//    SUPABASE_URL              — URL проекта Supabase (обязателен)
+//    SUPABASE_SERVICE_ROLE_KEY — service_role ключ Supabase (обязателен,
+//                                ТОЛЬКО сервер, никогда не отдавать клиенту)
+//    BOT_TOKEN                 — токен бота от @BotFather (нужен для входа
+//                                через Telegram Mini App)
+//    ACCESS_EXPIRES_IN         — срок access-токена (по умолчанию "15m")
+//    REFRESH_EXPIRES_IN        — срок refresh-токена (по умолчанию "30d")
 // ============================================================
 
+require("dotenv").config(); // подхватывает .env при локальной разработке
+
 const express = require("express");
-const jwt = require("jsonwebtoken");   // access + refresh токены
-const bcrypt = require("bcryptjs");    // хеширование паролей
-const initSqlJs = require("sql.js");   // SQLite, скомпилирован в WebAssembly (не требует установки)
-const fs = require("fs");
+const jwt = require("jsonwebtoken");        // access + refresh токены
+const bcrypt = require("bcryptjs");         // хеширование паролей
+const crypto = require("crypto");           // HMAC-проверка Telegram initData
+const { createClient } = require("@supabase/supabase-js");
 const path = require("path");
 
 const app = express();
@@ -14,85 +29,66 @@ const app = express();
 // ---- Конфигурация из переменных окружения ----
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
-// Если секрет не задан — сервер не запустится (защита от случайного деплоя без секрета)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const ACCESS_EXPIRES_IN = process.env.ACCESS_EXPIRES_IN || "15m";    // access-токен: 15 минут
+const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN || "30d";  // refresh-токен: 30 дней
+
+// Если критичные переменные не заданы — сервер не запустится
+// (защита от случайного деплоя без секретов)
 if (!JWT_SECRET) {
   console.error("FATAL: JWT_SECRET environment variable is not set");
   process.exit(1);
 }
-const ACCESS_EXPIRES_IN = process.env.ACCESS_EXPIRES_IN || "15m";    // access-токен: 15 минут
-const REFRESH_EXPIRES_IN = process.env.REFRESH_EXPIRES_IN || "30d";  // refresh-токен: 30 дней
-const DB_PATH = path.join(__dirname, "data", "kanban.db");
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
+  process.exit(1);
+}
+if (!BOT_TOKEN) {
+  console.warn("WARNING: BOT_TOKEN is not set — Telegram Mini App auth disabled");
+}
 
-// Создаём папку data/, если её нет
-const dataDir = path.join(__dirname, "data");
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-
-// Глобальное подключение к БД (открывается при старте сервера)
-let db;
+// Клиент Supabase с service_role ключом.
+// Этот ключ обходит Row Level Security, поэтому ВСЯ фильтрация
+// по user_id делается в коде сервера (см. запросы ниже).
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false },
+});
 
 // ============================================================
 //  Хранилище refresh-токенов (в памяти)
 //  Структура: Map<userId, Set<refreshToken>>
-//  В продакшене с несколькими инстансами нужно заменить на Redis
+//  При горизонтальном масштабировании заменить на Redis
 //  или отдельную таблицу в БД.
 // ============================================================
 const refreshTokens = new Map();
 
 // ============================================================
-//  Вспомогательные функции для работы с БД
-//  sql.js не имеет асинхронного API — всё синхронно.
-//  После каждого изменения вызываем saveDb() —
-//  экспортируем БД в бинарный буфер и пишем на диск.
+//  Вспомогательные функции для работы с БД (Supabase)
+//  Все функции async — supabase-js возвращает промисы.
 // ============================================================
 
-// Сохранить БД на диск
-function saveDb() {
-  const buf = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(buf));
-}
-
-// Выполнить INSERT/UPDATE/DELETE и сразу сохранить
-function dbRun(sql, params = []) {
-  db.run(sql, params);
-  saveDb();
-}
-
-// Получить одну строку (SELECT ... LIMIT 1) или null
-function dbGet(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params); // подставляем ?-параметры
-  let result = null;
-  if (stmt.step()) {
-    result = stmt.getAsObject();
-  }
-  stmt.free(); // обязательно освобождаем prepared statement
-  return result;
+// Получить одну строку или null
+async function dbGet(query) {
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data;
 }
 
 // Получить все строки запроса
-function dbAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
-  const results = [];
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
-}
-
-// Выполнить SQL без параметров (CREATE TABLE, ALTER TABLE, PRAGMA и т.д.)
-function dbExec(sql) {
-  db.exec(sql);
-  saveDb();
+async function dbAll(query) {
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
 }
 
 // ============================================================
 //  Middleware
 // ============================================================
 
-// Парсинг JSON-тела запросов
-app.use(express.json());
+// Парсинг JSON-тела запросов (initData от Telegram — длинная строка, лимит чуть выше дефолта)
+app.use(express.json({ limit: "256kb" }));
 // Раздача статических файлов из public/ (index.html, app.js, style.css и др.)
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -103,11 +99,14 @@ app.use(express.static(path.join(__dirname, "public")));
 /**
  * Создать access-токен (короткоживущий, 15 минут).
  * payload.type = "access" — чтобы отличать от refresh-токена.
+ * payload.name — отображаемое имя (email или имя из Telegram).
  */
 function generateAccessToken(user) {
-  return jwt.sign({ id: user.id, email: user.email, type: "access" }, JWT_SECRET, {
-    expiresIn: ACCESS_EXPIRES_IN,
-  });
+  return jwt.sign(
+    { id: user.id, email: user.email, name: displayName(user), type: "access" },
+    JWT_SECRET,
+    { expiresIn: ACCESS_EXPIRES_IN }
+  );
 }
 
 /**
@@ -118,6 +117,21 @@ function generateRefreshToken(user) {
   return jwt.sign({ id: user.id, type: "refresh" }, JWT_SECRET, {
     expiresIn: REFRESH_EXPIRES_IN,
   });
+}
+
+// Отображаемое имя пользователя: email, имя из Telegram или @username
+function displayName(user) {
+  return user.email || user.first_name || (user.username ? "@" + user.username : null) || "user";
+}
+
+// Публичное представление пользователя (без хеша пароля)
+function publicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    name: displayName(user),
+    telegram_id: user.telegram_id || null,
+  };
 }
 
 // Сохранить refresh-токен в памяти (привязываем к userId)
@@ -134,21 +148,27 @@ function removeRefreshToken(userId, token) {
   if (userTokens) {
     userTokens.delete(token);
     if (userTokens.size === 0) {
-      // Нет токенов — удаляем запись о пользователе
       refreshTokens.delete(userId);
     }
   }
 }
 
-// Удалить ВСЕ refresh-токены пользователя (при logout или force-logout)
+// Удалить ВСЕ refresh-токены пользователя (при logout)
 function clearUserRefreshTokens(userId) {
   refreshTokens.delete(userId);
+}
+
+// Выдать пару токенов и вернуть стандартный ответ клиенту
+function issueTokens(user) {
+  const accessToken = generateAccessToken(user);
+  const refreshToken = generateRefreshToken(user);
+  storeRefreshToken(user.id, refreshToken);
+  return { accessToken, refreshToken, user: publicUser(user) };
 }
 
 // ============================================================
 //  Middleware аутентификации
 //  Проверяет заголовок Authorization: Bearer <accessToken>
-//  При невалидном токене возвращает 401.
 // ============================================================
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -158,15 +178,55 @@ function auth(req, res, next) {
   try {
     const token = header.slice(7); // убираем "Bearer "
     const payload = jwt.verify(token, JWT_SECRET);
-    // Проверяем, что это access-токен (refresh-токеном нельзя достучаться до API)
     if (payload.type !== "access") {
       return res.status(401).json({ error: "Invalid token type" });
     }
-    req.user = payload; // кладём { id, email } в req.user
+    req.user = payload; // { id, email, name }
     next();
   } catch {
-    // Токен просрочен или подпись не совпадает
     return res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// ============================================================
+//  Проверка подписи Telegram Mini App initData
+//  Алгоритм из официальной документации:
+//    1. Убираем параметр hash из query-строки
+//    2. Остальные пары key=value сортируем по ключу, склеиваем "\n"
+//    3. secret = HMAC_SHA256("WebAppData", BOT_TOKEN)
+//    4. check  = HMAC_SHA256(secret, data_check_string) в hex
+//    5. Сравниваем check с hash (timing-safe)
+//  Плюс проверяем свежесть auth_date (не старше 24 часов).
+// ============================================================
+function verifyTelegramInitData(initData) {
+  if (!BOT_TOKEN) return null;
+
+  const params = new URLSearchParams(initData);
+  const hash = params.get("hash");
+  if (!hash) return null;
+  params.delete("hash");
+
+  const dataCheckString = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+
+  const secretKey = crypto.createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
+  const computed = crypto.createHmac("sha256", secretKey).update(dataCheckString).digest("hex");
+
+  // Сравнение без утечки по времени
+  const a = Buffer.from(computed, "hex");
+  const b = Buffer.from(hash, "hex");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+
+  // Свежесть подписи: не старше 24 часов
+  const authDate = parseInt(params.get("auth_date") || "0", 10);
+  if (!authDate || Math.abs(Date.now() / 1000 - authDate) > 86400) return null;
+
+  try {
+    return JSON.parse(params.get("user")); // { id, first_name, username, ... }
+  } catch {
+    return null;
   }
 }
 
@@ -174,70 +234,106 @@ function auth(req, res, next) {
 //  Маршруты авторизации
 // ============================================================
 
-// ---- Регистрация ----
-app.post("/api/auth/register", (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password required" });
+// ---- Вход через Telegram Mini App ----
+// Клиент (внутри Telegram WebView) присылает { initData } —
+// сырую строку Telegram.WebApp.initData. Сервер проверяет подпись,
+// находит или создаёт пользователя по telegram_id и выдаёт JWT-пару.
+app.post("/api/auth/telegram", async (req, res) => {
+  try {
+    const { initData } = req.body;
+    if (!initData) {
+      return res.status(400).json({ error: "initData is required" });
+    }
+
+    const tgUser = verifyTelegramInitData(initData);
+    if (!tgUser || !tgUser.id) {
+      return res.status(401).json({ error: "Invalid Telegram initData" });
+    }
+
+    // Ищем пользователя по telegram_id
+    let user = await dbGet(
+      supabase.from("users").select("*").eq("telegram_id", tgUser.id)
+    );
+
+    if (!user) {
+      // Первый вход из Telegram — создаём пользователя
+      const { data, error } = await supabase
+        .from("users")
+        .insert({
+          telegram_id: tgUser.id,
+          first_name: tgUser.first_name || null,
+          username: tgUser.username || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      user = data;
+    }
+
+    res.json(issueTokens(user));
+  } catch (err) {
+    console.error("Telegram auth error:", err);
+    res.status(500).json({ error: "Auth failed" });
   }
-  if (password.length < 4) {
-    return res.status(400).json({ error: "Password must be at least 4 characters" });
+});
+
+// ---- Регистрация (email + пароль, фолбэк вне Telegram) ----
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
+    }
+    if (password.length < 4) {
+      return res.status(400).json({ error: "Password must be at least 4 characters" });
+    }
+
+    const existing = await dbGet(
+      supabase.from("users").select("id").eq("email", email)
+    );
+    if (existing) {
+      return res.status(409).json({ error: "Email already registered" });
+    }
+
+    const hash = bcrypt.hashSync(password, 10);
+    const { data: user, error } = await supabase
+      .from("users")
+      .insert({ email, password_hash: hash })
+      .select()
+      .single();
+    if (error) throw error;
+
+    res.json(issueTokens(user));
+  } catch (err) {
+    console.error("Register error:", err);
+    res.status(500).json({ error: "Registration failed" });
   }
-
-  // Проверяем, не занят ли email
-  const existing = dbGet("SELECT id FROM users WHERE email = ?", [email]);
-  if (existing) {
-    return res.status(409).json({ error: "Email already registered" });
-  }
-
-  // Хешируем пароль (bcrypt, 10 раундов соли)
-  const hash = bcrypt.hashSync(password, 10);
-  dbRun("INSERT INTO users (email, password_hash) VALUES (?, ?)", [email, hash]);
-
-  // Получаем созданного пользователя
-  const user = dbGet("SELECT id, email FROM users WHERE email = ?", [email]);
-
-  // Создаём пару токенов
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
-  storeRefreshToken(user.id, refreshToken);
-
-  // Отдаём клиенту токены + инфу о пользователе
-  res.json({
-    accessToken,
-    refreshToken,
-    user: { id: user.id, email: user.email },
-  });
 });
 
 // ---- Вход (логин) ----
-app.post("/api/auth/login", (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password required" });
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password required" });
+    }
+
+    const user = await dbGet(supabase.from("users").select("*").eq("email", email));
+    if (!user || !user.password_hash || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    res.json(issueTokens(user));
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ error: "Login failed" });
   }
-
-  const user = dbGet("SELECT * FROM users WHERE email = ?", [email]);
-  // Сравниваем пароль с хешем
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: "Invalid email or password" });
-  }
-
-  const accessToken = generateAccessToken(user);
-  const refreshToken = generateRefreshToken(user);
-  storeRefreshToken(user.id, refreshToken);
-
-  res.json({
-    accessToken,
-    refreshToken,
-    user: { id: user.id, email: user.email },
-  });
 });
 
 // ---- Обновление токенов (refresh) ----
 // Клиент присылает refresh-токен, получает новую пару.
 // Старый refresh-токен при этом отзывается (ротация).
-app.post("/api/auth/refresh", (req, res) => {
+app.post("/api/auth/refresh", async (req, res) => {
   const { refreshToken } = req.body;
   if (!refreshToken) {
     return res.status(401).json({ error: "No refresh token" });
@@ -256,7 +352,9 @@ app.post("/api/auth/refresh", (req, res) => {
     }
 
     // Проверяем, что пользователь всё ещё существует в БД
-    const user = dbGet("SELECT id, email FROM users WHERE id = ?", [payload.id]);
+    const user = await dbGet(
+      supabase.from("users").select("*").eq("id", payload.id)
+    );
     if (!user) {
       return res.status(401).json({ error: "User not found" });
     }
@@ -275,8 +373,6 @@ app.post("/api/auth/refresh", (req, res) => {
 
 // ---- Выход (logout) ----
 // Отзывает все refresh-токены пользователя.
-// Middleware auth НЕ используется — клиент может разлогиниться
-// даже с просроченным access-токеном.
 app.post("/api/auth/logout", (req, res) => {
   const { refreshToken } = req.body;
 
@@ -284,13 +380,10 @@ app.post("/api/auth/logout", (req, res) => {
     try {
       const payload = jwt.verify(refreshToken, JWT_SECRET);
       if (payload.type === "refresh") {
-        // Удаляем ВСЕ refresh-токены пользователя
-        // (выход на всех устройствах)
         clearUserRefreshTokens(payload.id);
       }
     } catch {
-      // Если refresh-токен уже просрочен или невалиден —
-      // это не ошибка, просто игнорируем
+      // Просроченный/невалидный токен — просто игнорируем
     }
   }
 
@@ -298,10 +391,8 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 // ---- Текущий пользователь (проверка токена) ----
-// Используется фронтендом при загрузке страницы:
-// если токен валиден — показываем доску, иначе — форму логина.
 app.get("/api/me", auth, (req, res) => {
-  res.json({ user: { id: req.user.id, email: req.user.email } });
+  res.json({ user: { id: req.user.id, email: req.user.email, name: req.user.name } });
 });
 
 // ============================================================
@@ -309,277 +400,181 @@ app.get("/api/me", auth, (req, res) => {
 //  Все требуют аутентификации (middleware auth).
 // ============================================================
 
+const VALID_COLUMNS = ["backlog", "todo", "in_progress", "done"];
+
 // ---- Получить все задачи текущего пользователя ----
-// Сортируем по position (порядок в колонке).
-app.get("/api/tasks", auth, (req, res) => {
-  const tasks = dbAll(
-    "SELECT * FROM tasks WHERE user_id = ? ORDER BY position ASC",
-    [req.user.id]
-  );
-  // sql.js возвращает имена колонок в нижнем регистре — нормализуем
-  const normalized = tasks.map((t) => ({
-    id: t.id,
-    user_id: t.user_id,
-    title: t.title,
-    description: t.description,
-    column_name: t.column_name,
-    position: t.position,
-    due_date: t.due_date,
-    created_at: t.created_at,
-  }));
-  res.json({ tasks: normalized });
+app.get("/api/tasks", auth, async (req, res) => {
+  try {
+    const tasks = await dbAll(
+      supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", req.user.id)
+        .order("position", { ascending: true })
+    );
+    res.json({ tasks });
+  } catch (err) {
+    console.error("Get tasks error:", err);
+    res.status(500).json({ error: "Failed to load tasks" });
+  }
 });
 
 // ---- Создать новую задачу ----
-app.post("/api/tasks", auth, (req, res) => {
-  const { title, description, column_name, due_date } = req.body;
-  if (!title || !title.trim()) {
-    return res.status(400).json({ error: "Title is required" });
-  }
-
-  const col = column_name || "backlog";
-  // Разрешённые колонки
-  const validCols = ["backlog", "todo", "in_progress", "done"];
-  if (!validCols.includes(col)) {
-    return res.status(400).json({ error: "Invalid column: " + col });
-  }
-
-  // Вычисляем position: максимальная позиция в колонке + 1
-  const row = dbGet(
-    "SELECT COALESCE(MAX(position), 0) as max_pos FROM tasks WHERE user_id = ? AND column_name = ?",
-    [req.user.id, col]
-  );
-  const newPos = (row && row.max_pos != null) ? row.max_pos + 1 : 1;
-
-  // Вставляем через prepare (точнее возвращает last_insert_rowid)
-  const stmt = db.prepare(
-    "INSERT INTO tasks (user_id, title, description, column_name, position, due_date) VALUES (?, ?, ?, ?, ?, ?)"
-  );
-  stmt.run([req.user.id, title.trim(), description || "", col, newPos, due_date || null]);
-  stmt.free();
-
-  // Получаем ID только что вставленной строки
-  const lastIdResult = db.exec("SELECT last_insert_rowid() as id");
-  let lastId;
-  if (lastIdResult && lastIdResult.length > 0 && lastIdResult[0].values && lastIdResult[0].values.length > 0) {
-    lastId = lastIdResult[0].values[0][0];
-  }
-
-  const task = lastId ? dbGet("SELECT * FROM tasks WHERE id = ?", [lastId]) : null;
-
-  // Фолбэк: если не удалось получить ID через last_insert_rowid
-  if (!task) {
-    const fallback = dbGet(
-      "SELECT * FROM tasks WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-      [req.user.id]
-    );
-    if (!fallback) {
-      return res.status(500).json({ error: "Failed to create task" });
+app.post("/api/tasks", auth, async (req, res) => {
+  try {
+    const { title, description, column_name, due_date } = req.body;
+    if (!title || !title.trim()) {
+      return res.status(400).json({ error: "Title is required" });
     }
-    saveDb();
-    return res.status(201).json({
-      task: {
-        id: fallback.id,
-        user_id: fallback.user_id,
-        title: fallback.title,
-        description: fallback.description,
-        column_name: fallback.column_name,
-        position: fallback.position,
-        due_date: fallback.due_date,
-        created_at: fallback.created_at,
-      },
-    });
-  }
 
-  saveDb();
-  res.status(201).json({
-    task: {
-      id: task.id,
-      user_id: task.user_id,
-      title: task.title,
-      description: task.description,
-      column_name: task.column_name,
-      position: task.position,
-      due_date: task.due_date,
-      created_at: task.created_at,
-    },
-  });
+    const col = column_name || "backlog";
+    if (!VALID_COLUMNS.includes(col)) {
+      return res.status(400).json({ error: "Invalid column: " + col });
+    }
+
+    // Вычисляем position: максимальная позиция в колонке + 1
+    const last = await dbGet(
+      supabase
+        .from("tasks")
+        .select("position")
+        .eq("user_id", req.user.id)
+        .eq("column_name", col)
+        .order("position", { ascending: false })
+        .limit(1)
+    );
+    const newPos = last && last.position != null ? last.position + 1 : 1;
+
+    const { data: task, error } = await supabase
+      .from("tasks")
+      .insert({
+        user_id: req.user.id,
+        title: title.trim(),
+        description: description || "",
+        column_name: col,
+        position: newPos,
+        due_date: due_date || null,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+
+    res.status(201).json({ task });
+  } catch (err) {
+    console.error("Create task error:", err);
+    res.status(500).json({ error: "Failed to create task" });
+  }
 });
 
 // ---- Обновить задачу ----
-// Можно обновить любые поля: title, description, column_name, position, due_date.
-app.put("/api/tasks/:id", auth, (req, res) => {
-  const taskId = parseInt(req.params.id);
-  const task = dbGet("SELECT * FROM tasks WHERE id = ? AND user_id = ?", [taskId, req.user.id]);
-
-  if (!task) {
-    return res.status(404).json({ error: "Task not found" });
-  }
-
-  const { title, description, column_name, position, due_date } = req.body;
-
-  // Заголовок можно сменить, но нельзя сделать пустым
-  if (title !== undefined && title.trim() === "") {
-    return res.status(400).json({ error: "Title cannot be empty" });
-  }
-
-  // Динамически собираем SET-часть SQL: обновляем только то, что передано
-  const updates = [];
-  const params = [];
-
-  if (title !== undefined) {
-    updates.push("title = ?");
-    params.push(title.trim());
-  }
-  if (description !== undefined) {
-    updates.push("description = ?");
-    params.push(description);
-  }
-  if (column_name !== undefined) {
-    const validCols = ["backlog", "todo", "in_progress", "done"];
-    if (!validCols.includes(column_name)) {
-      return res.status(400).json({ error: "Invalid column: " + column_name });
+app.put("/api/tasks/:id", auth, async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id);
+    const task = await dbGet(
+      supabase.from("tasks").select("id").eq("id", taskId).eq("user_id", req.user.id)
+    );
+    if (!task) {
+      return res.status(404).json({ error: "Task not found" });
     }
-    updates.push("column_name = ?");
-    params.push(column_name);
-  }
-  if (position !== undefined) {
-    updates.push("position = ?");
-    params.push(position);
-  }
-  if (due_date !== undefined) {
-    updates.push("due_date = ?");
-    params.push(due_date);
-  }
 
-  if (updates.length > 0) {
-    params.push(taskId, req.user.id);
-    dbRun(`UPDATE tasks SET ${updates.join(", ")} WHERE id = ? AND user_id = ?`, params);
-  }
+    const { title, description, column_name, position, due_date } = req.body;
 
-  // Возвращаем обновлённую задачу
-  const updated = dbGet("SELECT * FROM tasks WHERE id = ?", [taskId]);
-  res.json({
-    task: {
-      id: updated.id,
-      user_id: updated.user_id,
-      title: updated.title,
-      description: updated.description,
-      column_name: updated.column_name,
-      position: updated.position,
-      due_date: updated.due_date,
-      created_at: updated.created_at,
-    },
-  });
+    if (title !== undefined && title.trim() === "") {
+      return res.status(400).json({ error: "Title cannot be empty" });
+    }
+
+    // Обновляем только переданные поля
+    const updates = {};
+    if (title !== undefined) updates.title = title.trim();
+    if (description !== undefined) updates.description = description;
+    if (column_name !== undefined) {
+      if (!VALID_COLUMNS.includes(column_name)) {
+        return res.status(400).json({ error: "Invalid column: " + column_name });
+      }
+      updates.column_name = column_name;
+    }
+    if (position !== undefined) updates.position = position;
+    if (due_date !== undefined) updates.due_date = due_date;
+
+    const { data: updated, error } = await supabase
+      .from("tasks")
+      .update(updates)
+      .eq("id", taskId)
+      .eq("user_id", req.user.id)
+      .select()
+      .single();
+    if (error) throw error;
+
+    res.json({ task: updated });
+  } catch (err) {
+    console.error("Update task error:", err);
+    res.status(500).json({ error: "Failed to update task" });
+  }
 });
 
 // ---- Массовое переупорядочивание (drag & drop) ----
 // Клиент присылает массив { id, column_name, position }.
-// Обновляем все позиции одним запросом (быстрее, чем N отдельных PUT).
-app.post("/api/tasks/reorder", auth, (req, res) => {
-  const { tasks: taskUpdates } = req.body;
-  if (!Array.isArray(taskUpdates)) {
-    return res.status(400).json({ error: "tasks array required" });
-  }
+app.post("/api/tasks/reorder", auth, async (req, res) => {
+  try {
+    const { tasks: taskUpdates } = req.body;
+    if (!Array.isArray(taskUpdates)) {
+      return res.status(400).json({ error: "tasks array required" });
+    }
 
-  // Обновляем каждую задачу; сохраняем на диск один раз в конце
-  for (const t of taskUpdates) {
-    db.run("UPDATE tasks SET column_name = ?, position = ? WHERE id = ? AND user_id = ?", [
-      t.column_name,
-      t.position,
-      t.id,
-      req.user.id,
-    ]);
-  }
-  saveDb();
+    // Обновляем каждую задачу параллельно;
+    // фильтр по user_id гарантирует, что чужие задачи не затронутся
+    await Promise.all(
+      taskUpdates.map((t) =>
+        supabase
+          .from("tasks")
+          .update({ column_name: t.column_name, position: t.position })
+          .eq("id", t.id)
+          .eq("user_id", req.user.id)
+          .then(({ error }) => {
+            if (error) throw error;
+          })
+      )
+    );
 
-  res.json({ ok: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Reorder error:", err);
+    res.status(500).json({ error: "Failed to reorder tasks" });
+  }
 });
 
 // ---- Удалить задачу ----
-app.delete("/api/tasks/:id", auth, (req, res) => {
-  const taskId = parseInt(req.params.id);
-  const task = dbGet("SELECT id FROM tasks WHERE id = ? AND user_id = ?", [taskId, req.user.id]);
-  if (!task) {
-    return res.status(404).json({ error: "Task not found" });
-  }
+app.delete("/api/tasks/:id", auth, async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id);
+    const { data, error } = await supabase
+      .from("tasks")
+      .delete()
+      .eq("id", taskId)
+      .eq("user_id", req.user.id)
+      .select("id");
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: "Task not found" });
+    }
 
-  dbRun("DELETE FROM tasks WHERE id = ? AND user_id = ?", [taskId, req.user.id]);
-  res.json({ ok: true });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Delete task error:", err);
+    res.status(500).json({ error: "Failed to delete task" });
+  }
 });
 
 // ---- SPA fallback ----
-// Все не-API GET-запросы отдаём index.html — нужно для клиентского роутинга
-// и чтобы PWA работал корректно при прямых переходах по URL.
+// Все не-API GET-запросы отдаём index.html
 app.get(/^\/(?!api\/)/, (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // ============================================================
-//  Инициализация БД и запуск сервера
+//  Запуск сервера
+//  Таблицы создаются в Supabase (см. supabase/schema.sql),
+//  миграции при старте больше не нужны.
 // ============================================================
-async function start() {
-  // Загружаем sql.js (WebAssembly-сборка SQLite)
-  const SQL = await initSqlJs();
-
-  // Открываем или создаём файл БД
-  if (fs.existsSync(DB_PATH)) {
-    const fileBuf = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(fileBuf);
-    console.log("Database loaded from file");
-  } else {
-    db = new SQL.Database();
-    console.log("New database created");
-  }
-
-  // ---- Создаём таблицы (если их ещё нет) ----
-  dbExec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
-    )
-  `);
-
-  dbExec(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      column_name TEXT NOT NULL DEFAULT 'backlog',
-      position INTEGER NOT NULL DEFAULT 0,
-      due_date TEXT NULL,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    )
-  `);
-
-  // ---- Миграция: если колонки due_date нет, добавляем ----
-  try {
-    const cols = db.exec("PRAGMA table_info(tasks)");
-    if (cols && cols.length > 0) {
-      const colNames = cols[0].values.map((r) => r[1]);
-      if (!colNames.includes("due_date")) {
-        dbExec("ALTER TABLE tasks ADD COLUMN due_date TEXT NULL");
-        console.log("Migration: added due_date column");
-      }
-    }
-  } catch (e) {
-    // Не страшно, если миграция не сработала (старая версия sql.js)
-  }
-
-  // ---- Сидирование: если position = 0, проставляем по id ----
-  dbRun("UPDATE tasks SET position = id WHERE position = 0");
-
-  // ---- Запуск ----
-  app.listen(PORT, () => {
-    console.log(`Kanban server running on http://localhost:${PORT}`);
-  });
-}
-
-start().catch((err) => {
-  console.error("Failed to start:", err);
-  process.exit(1);
+app.listen(PORT, () => {
+  console.log(`Kanban server running on http://localhost:${PORT}`);
 });

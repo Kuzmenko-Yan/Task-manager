@@ -143,6 +143,59 @@ async function logout() {
   }
 }
 
+// ============================================================
+//  Telegram Mini App
+//  Если страница открыта внутри Telegram (WebView),
+//  window.Telegram.WebApp доступен и содержит initData —
+//  подписанную строку с данными пользователя.
+// ============================================================
+const tg = window.Telegram && window.Telegram.WebApp;
+const isTelegram = !!(tg && tg.initData);
+
+/**
+ * Сохранить сессию после любого входа (email или Telegram).
+ */
+function saveSession(data) {
+  accessToken = data.accessToken;
+  refreshToken = data.refreshToken;
+  // Для Telegram-пользователей email может отсутствовать — показываем имя
+  userEmail = data.user.name || data.user.email || "";
+  localStorage.setItem("kanban_access_token", accessToken);
+  localStorage.setItem("kanban_refresh_token", refreshToken);
+  localStorage.setItem("kanban_email", userEmail);
+}
+
+/**
+ * Вход через Telegram Mini App:
+ * отправляем initData на сервер, тот проверяет HMAC-подпись
+ * токеном бота и возвращает JWT-пару.
+ */
+async function telegramLogin() {
+  const res = await fetch(API + "/auth/telegram", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initData: tg.initData }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Telegram auth failed");
+  saveSession(data);
+}
+
+/**
+ * Подстроить интерфейс под Telegram:
+ * expand() раскрывает WebView на весь экран,
+ * ready() сообщает Telegram, что приложение загружено.
+ */
+function initTelegramUi() {
+  if (!isTelegram) return;
+  tg.ready();
+  tg.expand();
+  // Подхватываем цветовую схему Telegram (светлая/тёмная)
+  if (tg.colorScheme === "dark") {
+    document.body.classList.add("tg-dark");
+  }
+}
+
 // ---- Обёртки для логина/регистрации ----
 function login(email, pwd) {
   return api("/auth/login", {
@@ -201,12 +254,7 @@ loginForm.addEventListener("submit", async (e) => {
 
   try {
     const data = await login(email, pwd);
-    accessToken = data.accessToken;
-    refreshToken = data.refreshToken;
-    userEmail = data.user.email;
-    localStorage.setItem("kanban_access_token", accessToken);
-    localStorage.setItem("kanban_refresh_token", refreshToken);
-    localStorage.setItem("kanban_email", userEmail);
+    saveSession(data);
     document.getElementById("user-email-display").textContent = userEmail;
     showScreen("board");
     initColumnTitleEditing();
@@ -235,12 +283,7 @@ registerForm.addEventListener("submit", async (e) => {
 
   try {
     const data = await register(email, pwd);
-    accessToken = data.accessToken;
-    refreshToken = data.refreshToken;
-    userEmail = data.user.email;
-    localStorage.setItem("kanban_access_token", accessToken);
-    localStorage.setItem("kanban_refresh_token", refreshToken);
-    localStorage.setItem("kanban_email", userEmail);
+    saveSession(data);
     document.getElementById("user-email-display").textContent = userEmail;
     showScreen("board");
     initColumnTitleEditing();
@@ -698,16 +741,33 @@ document.getElementById("delete-task-btn").addEventListener("click", async () =>
 // ============================================================
 //  Инициализация приложения при загрузке страницы
 // ============================================================
-if (accessToken && userEmail) {
+function enterBoard() {
+  document.getElementById("user-email-display").textContent = userEmail;
+  showScreen("board");
+  initColumnTitleEditing();
+  updateColumnTitles();
+  loadTasks();
+}
+
+initTelegramUi();
+
+if (isTelegram) {
+  // Открыто внутри Telegram Mini App — входим через initData,
+  // форму логина не показываем вовсе.
+  telegramLogin()
+    .then(enterBoard)
+    .catch((err) => {
+      console.error("Telegram login failed:", err);
+      // Подпись не сошлась или сервер недоступен — показываем
+      // экран авторизации с ошибкой как фолбэк
+      showScreen("auth");
+      document.getElementById("login-error").textContent =
+        "Не удалось войти через Telegram. Попробуйте ещё раз.";
+    });
+} else if (accessToken && userEmail) {
   // Если токен есть в localStorage — проверяем его валидность через GET /api/me
   api("/me")
-    .then(() => {
-      document.getElementById("user-email-display").textContent = userEmail;
-      showScreen("board");
-      initColumnTitleEditing();
-      updateColumnTitles();
-      loadTasks();
-    })
+    .then(enterBoard)
     .catch(() => {
       // Токен просрочен или невалиден — выходим
       logout();

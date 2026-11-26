@@ -38,6 +38,13 @@
   <link rel="stylesheet" href="/style.css">
 
   <!--
+    Telegram Web App SDK — при открытии внутри Telegram Mini App
+    даёт window.Telegram.WebApp (initData, тема, expand() и т.д.).
+    Вне Telegram объект просто не появится — приложение работает как обычно.
+  -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!--
     SortableJS — библиотека для drag & drop.
     Загружается с CDN, версия зафиксирована.
     Если CDN недоступен — drag & drop не будет работать,
