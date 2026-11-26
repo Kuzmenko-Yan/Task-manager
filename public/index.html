@@ -109,56 +109,32 @@
 
     <!--
       Панель инструментов: форма быстрого создания задачи.
-      Поля: заголовок (обязательное), колонка, дата выполнения.
+      Поля: заголовок (обязательное) и дата выполнения.
+      Раздел не выбирается — задача попадает в активный чип.
     -->
     <div class="toolbar">
       <form id="add-task-form" class="add-task-form">
         <input type="text" id="new-task-title" placeholder="Новая задача..." required>
-        <select id="new-task-column">
-          <option value="backlog">Бэклог</option>
-          <option value="todo">To Do</option>
-          <option value="in_progress">В процессе</option>
-          <option value="done">Готово</option>
-        </select>
         <input type="date" id="new-task-due" title="Дата выполнения">
         <button type="submit" class="btn btn-primary">Добавить</button>
       </form>
     </div>
 
     <!--
-      Основная сетка колонок канбан-доски.
-      Каждая колонка:
-        column-header — заголовок + счётчик задач
-        column-body   — контейнер для карточек (сюда SortableJS вставляет задачи)
-      col-title с contenteditable — пользователь может переименовать колонку
-        двойным кликом.
+      Панель разделов (чипы): Бэклог / To Do / В процессе / Готово.
+      Одна строка с горизонтальным скроллом, активный раздел подсвечен.
+      Счётчик внутри чипа — число задач в разделе.
+      Название раздела можно переименовать (contenteditable).
+      Чипы строятся из JS (renderSections).
     -->
-    <div class="board" id="kanban-board">
+    <div class="sections" id="sections"></div>
 
-      <!-- Колонка "Бэклог" -->
-      <div class="column" data-column="backlog">
-        <div class="column-header">📥 <span class="col-title" contenteditable="true" data-col="backlog">Бэклог</span> <span class="column-count" id="count-backlog">0</span></div>
-        <div class="column-body" id="col-backlog"></div>
-      </div>
-
-      <!-- Колонка "To Do" -->
-      <div class="column" data-column="todo">
-        <div class="column-header">📝 <span class="col-title" contenteditable="true" data-col="todo">To Do</span> <span class="column-count" id="count-todo">0</span></div>
-        <div class="column-body" id="col-todo"></div>
-      </div>
-
-      <!-- Колонка "В процессе" -->
-      <div class="column" data-column="in_progress">
-        <div class="column-header">⚙️ <span class="col-title" contenteditable="true" data-col="in_progress">В процессе</span> <span class="column-count" id="count-in_progress">0</span></div>
-        <div class="column-body" id="col-in_progress"></div>
-      </div>
-
-      <!-- Колонка "Готово" -->
-      <div class="column" data-column="done">
-        <div class="column-header">✅ <span class="col-title" contenteditable="true" data-col="done">Готово</span> <span class="column-count" id="count-done">0</span></div>
-        <div class="column-body" id="col-done"></div>
-      </div>
-    </div>
+    <!--
+      Список задач активного раздела.
+      Одна колонка во всю ширину — как в TaskFlow.
+      Сюда SortableJS вставляет карточки и app.js рендерит задачи.
+    -->
+    <div class="tasks-list" id="tasks-list"></div>
 
     <!-- =========================================================
       Модальное окно редактирования задачи

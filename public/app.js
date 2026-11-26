@@ -310,6 +310,18 @@ const columnNames = {
   done: "Готово",
 };
 
+// Иконки разделов (для чипов)
+const COLUMN_ICONS = {
+  backlog: "📥",
+  todo: "📝",
+  in_progress: "⚙️",
+  done: "✅",
+};
+
+// Активный раздел (чип). Сохраняется между сессиями.
+let currentColumn = localStorage.getItem("kanban_current_column") || "backlog";
+if (!columnsOrder.includes(currentColumn)) currentColumn = "backlog";
+
 // Все задачи текущего пользователя (загружаются с сервера)
 let allTasks = [];
 
@@ -348,23 +360,60 @@ function getColumnNames() {
 }
 
 /**
- * Обновить заголовки колонок в DOM и в <select>-ах (форма создания / редактирования).
+ * Обновить заголовки разделов: перестраивает чипы
+ * и подставляет новые имена в <select> модального окна.
  * Вызывается после переименования или при первоначальной загрузке.
  */
 function updateColumnTitles() {
+  renderSections();
+
+  // Опции в <select> модалки редактирования (перемещение между разделами)
   const names = getColumnNames();
   columnsOrder.forEach((col) => {
-    // Заголовок колонки (<span contenteditable>)
-    const span = document.querySelector(`.col-title[data-col="${col}"]`);
-    if (span && span.textContent.trim() !== names[col]) {
-      span.textContent = names[col];
-    }
-
-    // Опции в выпадающих списках выбора колонки
-    document.querySelectorAll("select option[value='" + col + "']").forEach((opt) => {
+    document.querySelectorAll("#edit-task-column option[value='" + col + "']").forEach((opt) => {
       opt.textContent = names[col];
     });
   });
+}
+
+/**
+ * Отрисовать чипы разделов (Бэклог / To Do / В процессе / Готово).
+ * Чип = иконка + редактируемое название + счётчик задач.
+ * Клик переключает активный раздел и перерисовывает список.
+ */
+function renderSections() {
+  const box = document.getElementById("sections");
+  if (!box) return;
+  const names = getColumnNames();
+  box.innerHTML = "";
+
+  columnsOrder.forEach((col) => {
+    const count = allTasks.filter((t) => t.column_name === col).length;
+    const chip = document.createElement("div");
+    chip.className = "section-chip" + (col === currentColumn ? " active" : "");
+    chip.dataset.col = col;
+    chip.innerHTML =
+      `<span class="chip-icon">${COLUMN_ICONS[col]}</span>` +
+      `<span class="col-title" contenteditable="true" data-col="${col}">${escapeHtml(names[col])}</span>` +
+      `<span class="chip-count">${count}</span>`;
+
+    // Клик по чипу — переключение раздела.
+    // Если клик был по редактируемому названию — не переключаем,
+    // чтобы не мешать переименованию.
+    chip.addEventListener("click", (e) => {
+      if (e.target.classList.contains("col-title")) return;
+      if (col === currentColumn) return;
+      currentColumn = col;
+      localStorage.setItem("kanban_current_column", col);
+      renderSections();
+      renderBoard();
+    });
+
+    box.appendChild(chip);
+  });
+
+  // Перевешиваем обработчики переименования на свежие чипы
+  initColumnTitleEditing();
 }
 
 /**
@@ -475,45 +524,44 @@ function buildCardHtml(task) {
 }
 
 /**
- * Отрисовать все колонки доски.
- * Фильтруем задачи по column_name и строим HTML для каждой колонки.
- * Сравниваем с текущим innerHTML — если не изменился, DOM не трогаем
- * (избегаем лишних перерисовок).
+ * Отрисовать список задач активного раздела (чипа).
+ * Показываем одну колонку во всю ширину — как в TaskFlow.
+ * Сравниваем с текущим innerHTML — если не изменился, DOM не трогаем.
  * На каждую карточку вешаем обработчик клика — открытие модалки.
+ * Попутно обновляем счётчики в чипах (renderSections).
  */
 function renderBoard() {
-  columnsOrder.forEach((col) => {
-    const body = document.getElementById("col-" + col);
-    const tasks = allTasks.filter((t) => t.column_name === col);
-    document.getElementById("count-" + col).textContent = tasks.length;
+  renderSections();
 
-    const newHtml = tasks.map((task) => {
-      return `<div class="task-card ${dueClass(task.due_date)}" data-id="${task.id}">${buildCardHtml(task)}</div>`;
-    }).join("");
+  const body = document.getElementById("tasks-list");
+  const tasks = allTasks
+    .filter((t) => t.column_name === currentColumn)
+    .sort((a, b) => a.position - b.position);
 
-    if (body.innerHTML !== newHtml) {
-      body.innerHTML = newHtml;
+  if (tasks.length === 0) {
+    const emptyHtml = '<div class="empty-hint">В этом разделе пока нет задач</div>';
+    if (body.innerHTML !== emptyHtml) body.innerHTML = emptyHtml;
+    return;
+  }
+
+  const newHtml = tasks.map((task) => {
+    return `<div class="task-card ${dueClass(task.due_date)}" data-id="${task.id}">${buildCardHtml(task)}</div>`;
+  }).join("");
+
+  if (body.innerHTML !== newHtml) {
+    body.innerHTML = newHtml;
+  }
+
+  // Вешаем обработчики клика (открытие модалки) на каждую карточку
+  body.querySelectorAll(".task-card").forEach((card) => {
+    const taskId = parseInt(card.dataset.id);
+    const task = allTasks.find((t) => t.id === taskId);
+    if (task) {
+      // cloneNode + replace убирает старый обработчик, чтобы не дублировались
+      const newCard = card.cloneNode(true);
+      newCard.addEventListener("click", () => openModal(task));
+      card.replaceWith(newCard);
     }
-
-    // Вешаем обработчики клика (открытие модалки) на каждую карточку
-    body.querySelectorAll(".task-card").forEach((card) => {
-      const taskId = parseInt(card.dataset.id);
-      const task = allTasks.find((t) => t.id === taskId);
-      if (task) {
-        // cloneNode + replace убирает старый обработчик, чтобы не дублировались
-        const newCard = card.cloneNode(true);
-        newCard.addEventListener("click", () => openModal(task));
-        card.replaceWith(newCard);
-      }
-    });
-  });
-}
-
-// Обновить счётчики задач в заголовках колонок (без перерисовки всей доски)
-function updateColumnCounts() {
-  columnsOrder.forEach((col) => {
-    const tasks = allTasks.filter((t) => t.column_name === col);
-    document.getElementById("count-" + col).textContent = tasks.length;
   });
 }
 
@@ -531,19 +579,18 @@ function escapeHtml(str) {
 document.getElementById("add-task-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const titleInput = document.getElementById("new-task-title");
-  const columnSelect = document.getElementById("new-task-column");
   const dueInput = document.getElementById("new-task-due");
   const title = titleInput.value.trim();
 
   if (!title) return;
 
   try {
-    // POST /api/tasks — заголовок, колонка, срок
+    // POST /api/tasks — задача попадает в активный раздел (чип)
     const data = await api("/tasks", {
       method: "POST",
       body: JSON.stringify({
         title,
-        column_name: columnSelect.value,
+        column_name: currentColumn,
         due_date: dueInput.value || null,
       }),
     });
@@ -562,88 +609,59 @@ document.getElementById("add-task-form").addEventListener("submit", async (e) =>
 
 // ============================================================
 //  Drag & Drop (SortableJS)
-//  Позволяет перетаскивать задачи между колонками и менять порядок.
-//  Применяет оптимистичный подход: сразу меняем DOM/стейт,
-//  затем синхронизируем с сервером через POST /api/tasks/reorder.
-//  При ошибке синхронизации — откатываем и перезагружаем с сервера.
+//  Работает внутри активного раздела: меняет порядок карточек
+//  в списке. Перенос между разделами — через модалку (селект).
+//  Оптимистичный подход: сразу меняем стейт, затем
+//  синхронизируем с сервером через POST /api/tasks/reorder.
 // ============================================================
 function initSortable() {
-  columnsOrder.forEach((col) => {
-    const el = document.getElementById("col-" + col);
-    new Sortable(el, {
-      group: "kanban",             // можно перетаскивать между колонками
-      animation: 150,              // плавная анимация перемещения
-      easing: "cubic-bezier(0.2, 0, 0, 1)",
-      ghostClass: "sortable-ghost", // класс для «призрака» перетаскиваемой карточки
-      dragClass: "sortable-drag",   // класс для исходной карточки во время перетаскивания
+  const el = document.getElementById("tasks-list");
+  new Sortable(el, {
+    draggable: ".task-card",      // перетаскиваем только карточки (не заглушку «пусто»)
+    animation: 150,               // плавная анимация перемещения
+    easing: "cubic-bezier(0.2, 0, 0, 1)",
+    ghostClass: "sortable-ghost", // класс для «призрака» перетаскиваемой карточки
+    dragClass: "sortable-drag",   // класс для исходной карточки во время перетаскивания
 
-      /**
-       * onEnd — вызывается, когда пользователь отпустил карточку.
-       * SortableJS уже переместил элемент в DOM, нам нужно:
-       *   1. Сохранить снимок allTasks (для отката при ошибке)
-       *   2. Собрать новый порядок из DOM
-       *   3. Обновить локальный стейт
-       *   4. Отправить изменения на сервер
-       */
-      onEnd: function (evt) {
-        // Снимок до изменений — для отката при ошибке синхронизации
-        previousTasks = allTasks.map((t) => ({ ...t }));
+    /**
+     * onEnd — пользователь отпустил карточку.
+     * SortableJS уже переместил элемент в DOM, нам нужно:
+     *   1. Сохранить снимок allTasks (для отката при ошибке)
+     *   2. Собрать новый порядок из DOM
+     *   3. Обновить локальный стейт
+     *   4. Отправить изменения на сервер
+     */
+    onEnd: function () {
+      // Снимок до изменений — для отката при ошибке синхронизации
+      previousTasks = allTasks.map((t) => ({ ...t }));
 
-        // Определяем целевую колонку (куда перетащили)
-        const targetCol = evt.to.closest(".column-body").id.replace("col-", "");
-
-        // Собираем массив обновлений из текущего состояния DOM
-        const updates = [];
-        columnsOrder.forEach((c) => {
-          const cards = document.querySelectorAll("#col-" + c + " .task-card");
-          cards.forEach((card, i) => {
-            const cardId = parseInt(card.dataset.id);
-            // Для перетаскиваемого элемента гарантируем правильную колонку
-            const effectiveColumn = (c === targetCol && card.dataset.id === String(evt.item.dataset.id))
-              ? targetCol
-              : c;
-            updates.push({
-              id: cardId,
-              column_name: effectiveColumn,
-              position: i, // позиция в колонке (0-based)
-            });
-          });
+      // Новый порядок позиций внутри активного раздела (1-based)
+      const updates = [];
+      el.querySelectorAll(".task-card").forEach((card, i) => {
+        updates.push({
+          id: parseInt(card.dataset.id),
+          column_name: currentColumn,
+          position: i + 1,
         });
+      });
 
-        // Оптимистичное обновление локального стейта
-        allTasks = allTasks.map((t) => {
-          const upd = updates.find((u) => u.id === t.id);
-          if (upd) {
-            return { ...t, column_name: upd.column_name, position: upd.position };
-          }
-          return t;
-        });
+      // Оптимистичное обновление локального стейта
+      allTasks = allTasks.map((t) => {
+        const upd = updates.find((u) => u.id === t.id);
+        return upd ? { ...t, position: upd.position } : t;
+      });
 
-        // Пересортировка allTasks согласно новым позициям
-        const sorted = [];
-        columnsOrder.forEach((c) => {
-          const colTasks = allTasks
-            .filter((t) => t.column_name === c)
-            .sort((a, b) => a.position - b.position);
-          sorted.push(...colTasks);
-        });
-        allTasks = sorted;
-
-        // Обновляем счётчики (DOM перестраивать не нужно — SortableJS уже всё сделал)
-        updateColumnCounts();
-
-        // Синхронизация с сервером
-        api("/tasks/reorder", {
-          method: "POST",
-          body: JSON.stringify({ tasks: updates }),
-        }).catch((err) => {
-          console.error("Reorder sync failed:", err);
-          // При ошибке: откатываем стейт и перезагружаем доску с сервера
-          allTasks = previousTasks.map((t) => ({ ...t }));
-          loadTasks();
-        });
-      },
-    });
+      // Синхронизация с сервером
+      api("/tasks/reorder", {
+        method: "POST",
+        body: JSON.stringify({ tasks: updates }),
+      }).catch((err) => {
+        console.error("Reorder sync failed:", err);
+        // При ошибке: откатываем стейт и перезагружаем доску с сервера
+        allTasks = previousTasks.map((t) => ({ ...t }));
+        loadTasks();
+      });
+    },
   });
 }
 

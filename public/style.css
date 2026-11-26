@@ -360,6 +360,88 @@ body {
 }
 
 /* ============================================================
+   Разделы-чипы (вместо колонок, как в TaskFlow)
+   Одна строка с горизонтальным скроллом; активный раздел
+   подсвечен акцентным цветом. Внутри чипа — счётчик задач.
+============================================================ */
+.sections {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  overflow-x: auto;             /* на узких экранах чипы прокручиваются */
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: none;         /* скрываем скроллбар (Firefox) */
+}
+
+.sections::-webkit-scrollbar {
+  display: none;                 /* скрываем скроллбар (Chrome/Safari) */
+}
+
+/* Один чип раздела */
+.section-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.9rem;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* Активный раздел — акцентная заливка */
+.section-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+/* Счётчик задач внутри чипа */
+.chip-count {
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+}
+
+.section-chip.active .chip-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+/* Редактируемое название внутри активного чипа — белый пунктир */
+.section-chip.active .col-title:hover,
+.section-chip.active .col-title:focus {
+  background: rgba(255, 255, 255, 0.15);
+  border-bottom-color: #fff;
+}
+
+/* ============================================================
+   Список задач активного раздела
+   Одна колонка по центру, ограниченная ширина — как в TaskFlow.
+============================================================ */
+.tasks-list {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem 3rem;
+}
+
+/* Заглушка для пустого раздела */
+.empty-hint {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 3rem 1rem;
+  font-size: 0.95rem;
+}
+
+/* ============================================================
    Карточка задачи
 ============================================================ */
 .task-card {
