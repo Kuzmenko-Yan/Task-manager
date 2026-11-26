@@ -60,12 +60,18 @@ cp .env.example .env
 
 ```bash
 npm install
-npm start
+npm run dev
 ```
 
-Открыть: `http://localhost:3000` (в браузере — вход по email/пароль).
+Открыть: `http://localhost:3000`
 
-> Telegram Mini App требует **HTTPS**, поэтому локально в Telegram
+- Если `.env` с реальными ключами Supabase заполнен — работа идёт
+  против настоящей базы.
+- Если `.env` нет — автоматически поднимается встроенный мок Supabase
+  (`dev/mock-supabase.js`), данные живут в памяти до перезапуска.
+  Так можно проверить всё приложение без единого секрета.
+
+> Telegram Mini App требует **HTTPS**, поэтому в Telegram
 > проверять можно только через туннель (например, `ngrok http 3000`)
 > или после деплоя.
 
